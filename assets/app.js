@@ -43,7 +43,18 @@
     invalid_content: '내용이 비어 있거나 너무 깁니다. (최대 10만 자)',
   };
   const errText = (err) =>
-    ERRORS[err.code] || (err instanceof TypeError ? '서버에 연결할 수 없습니다. 잠시 뒤 다시 시도해 주세요.' : err.message || String(err));
+    ERRORS[err.code] || (err instanceof TypeError
+      ? (navigator.onLine === false
+        ? '인터넷에 연결되어 있지 않아요. 한 번 열어 본 문서만 오프라인에서 볼 수 있고, 저장·검색은 연결된 뒤에 할 수 있어요.'
+        : '서버에 연결할 수 없습니다. 잠시 뒤 다시 시도해 주세요.')
+      : err.message || String(err));
+
+  /* 오프라인 안내 띠: 인터넷이 끊겼거나, 서비스 워커가 저장본으로 응답한 경우에 보인다 */
+  let servedFromCache = false;
+  function updateOffline() {
+    const bar = $('#offline');
+    if (bar) bar.hidden = !(servedFromCache || navigator.onLine === false);
+  }
 
   async function sb(path, { method = 'GET', body } = {}) {
     const res = await fetch(`${C.supabaseUrl}/rest/v1/${path}`, {
@@ -51,6 +62,10 @@
       headers: { apikey: C.supabaseKey, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
+    if (method === 'GET') {
+      servedFromCache = res.headers.get('x-wiki-offline') === '1';
+      updateOffline();
+    }
     if (!res.ok) {
       let j = null;
       try { j = await res.json(); } catch (e) {}
@@ -910,7 +925,18 @@
   function renderChrome() {
     $('#brand').textContent = C.name;
     $('#footer').innerHTML = `${esc(C.name)} · 문서 ${INDEX.pages.length}개` +
-      (C.repo ? ` · <a href="https://github.com/${esc(C.repo)}" target="_blank" rel="noopener">GitHub</a>` : '');
+      (C.repo ? ` · <a href="https://github.com/${esc(C.repo)}" target="_blank" rel="noopener">GitHub</a>` : '') +
+      (installPrompt ? ' · <a href="#" id="install-app">앱으로 설치</a>' : '');
+    const inst = $('#install-app');
+    if (inst) {
+      inst.addEventListener('click', async (e) => {
+        e.preventDefault();
+        installPrompt.prompt();
+        await installPrompt.userChoice.catch(() => {});
+        installPrompt = null;
+        renderChrome();
+      });
+    }
   }
 
   /* 검색창 자동완성 */
@@ -996,6 +1022,58 @@
     }
   });
 
+  /* ---------- 앱 설치(PWA) ---------- */
+
+  let installPrompt = null;
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    installPrompt = e;
+    renderChrome();
+  });
+  window.addEventListener('appinstalled', () => { installPrompt = null; renderChrome(); });
+
+  function showUpdateToast(apply) {
+    if ($('.pwa-toast')) return;
+    const t = document.createElement('div');
+    t.className = 'pwa-toast';
+    t.setAttribute('role', 'status');
+    t.innerHTML = '<span>새 버전이 있어요</span><button type="button">새로고침</button><button type="button" class="x" aria-label="닫기">✕</button>';
+    t.querySelector('button').addEventListener('click', apply);
+    t.querySelector('.x').addEventListener('click', () => t.remove());
+    document.body.appendChild(t);
+  }
+
+  function registerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    const secure = location.protocol === 'https:' || ['localhost', '127.0.0.1'].includes(location.hostname);
+    if (!secure) return;
+    const hadController = !!navigator.serviceWorker.controller; // 처음 설치될 때는 새로고침하지 않는다
+    let reloading = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloading) return;
+      reloading = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js').then((reg) => {
+      const offer = (worker) => showUpdateToast(() => worker.postMessage('SKIP_WAITING'));
+      if (reg.waiting && navigator.serviceWorker.controller) offer(reg.waiting);
+      reg.addEventListener('updatefound', () => {
+        const w = reg.installing;
+        if (!w) return;
+        w.addEventListener('statechange', () => {
+          if (w.state === 'installed' && navigator.serviceWorker.controller) offer(w);
+        });
+      });
+    }).catch(() => {});
+  }
+
+  window.addEventListener('online', () => {
+    servedFromCache = false;
+    updateOffline();
+    loadIndex().then(() => { renderChrome(); renderSide(); }).catch(() => {});
+  });
+  window.addEventListener('offline', updateOffline);
+
   /* ---------- 시작 ---------- */
 
   async function init() {
@@ -1011,7 +1089,9 @@
     renderSide();
     window.addEventListener('hashchange', route);
     route();
+    updateOffline();
   }
 
+  registerServiceWorker();
   init();
 })();

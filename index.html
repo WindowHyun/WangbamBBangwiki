@@ -2,10 +2,19 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>왕밤빵 위키</title>
   <meta name="description" content="누구나 고쳐 쓰는 마크다운 기반 위키">
-  <link rel="stylesheet" href="assets/style.css?v=7">
+  <meta name="theme-color" content="#00a495" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#14b8a6" media="(prefers-color-scheme: dark)">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="assets/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="왕밤빵 위키">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="stylesheet" href="assets/style.css?v=8">
   <script>
     (function () {
       try {
@@ -33,6 +42,10 @@
     </div>
   </header>
 
+  <div class="offline-bar" id="offline" role="status" hidden>
+    오프라인이에요. 저장돼 있던 내용을 보여 드리는 중이에요. 저장·검색·사진 올리기는 인터넷이 연결된 뒤에 할 수 있어요.
+  </div>
+
   <div class="layout">
     <main id="app" class="main"><p class="loading">불러오는 중…</p></main>
     <aside id="side" class="side" aria-label="최근 변경"></aside>
@@ -45,9 +58,9 @@
   <script src="assets/vendor/purify.min.js"></script>
   <script src="assets/vendor/turndown.min.js"></script>
   <script src="assets/vendor/turndown-plugin-gfm.js"></script>
-  <script src="assets/config.js?v=7"></script>
-  <script src="assets/infobox.js?v=7"></script>
-  <script src="assets/editor.js?v=7"></script>
-  <script src="assets/app.js?v=7"></script>
+  <script src="assets/config.js?v=8"></script>
+  <script src="assets/infobox.js?v=8"></script>
+  <script src="assets/editor.js?v=8"></script>
+  <script src="assets/app.js?v=8"></script>
 </body>
 </html>
