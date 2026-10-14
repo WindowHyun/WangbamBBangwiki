@@ -22,6 +22,7 @@ GitHub Pages(정적 사이트) + Supabase(DB)로 동작하는 나무위키 스�
   | `Tab` / `Shift+Tab` | 목록 들여쓰기·내어쓰기, 표에서는 다음·이전 칸 | | |
 
   Mac에서는 `Ctrl` 대신 `Cmd`.
+- **이미지 올리기** (Supabase Storage): 툴바 이미지 버튼에서 사진을 고르거나, 편집창에 끌어다 놓기·붙여넣기(캡처 포함). PNG/JPG/GIF/WEBP 5MB 이하, 긴 변이 1600px 을 넘으면 자동으로 줄여서 올림. 프로필 상자에도 사진 올리기 버튼이 있음
 - **프로필 상자(인포박스)**: 인물·작품·단체 문서 오른쪽 위에 사진과 정보 표를 보여 줌. 편집기의 **삽입 → 프로필 상자**에서 양식(인물/작품/단체)을 골라 만들고, 만든 상자를 눌러 고칠 수 있음. 본문에는 `:::infobox ... :::` 블록으로 저장되어 검색·역링크·편집 기록이 그대로 동작
 - **편집 기록(역사)**, 판 보기, 두 판 비교(diff), 이전 판으로 되돌리기
 - 편집 충돌 감지 (내가 편집하는 사이 다른 사람이 저장하면 알려 줌)
@@ -47,6 +48,18 @@ GitHub Pages(정적 사이트) + Supabase(DB)로 동작하는 나무위키 스�
 - 본문은 DOMPurify로 정화해서 렌더링합니다.
 
 ## 운영 (Supabase SQL Editor에서 실행)
+
+이미지 올리기 제한: IP당 분당 8장 / 하루 100장, 전체 하루 1000장 (`private.allow_image_upload()` 의 숫자를 고치면 조정). 올린 사람은 서버 기록(`private.upload_log`)에 IP 해시와 파일 이름으로 남음.
+
+문제 이미지를 올린 사람 차단 (파일 이름으로 IP 해시를 찾아 차단 — 문서 편집과 이미지 업로드가 함께 막힘):
+
+```sql
+insert into private.blocked_ips (ip_hash, reason)
+select ip_hash, '이미지 장난' from private.upload_log where object_name = '2026/10/파일이름.png'
+on conflict do nothing;
+```
+
+이미지 파일 삭제는 Supabase 대시보드 **Storage → wiki-images** 에서 합니다. (문서에서 쓰이지 않는 이미지도 자동으로 지워지지는 않음)
 
 문서 보호 / 보호 해제:
 

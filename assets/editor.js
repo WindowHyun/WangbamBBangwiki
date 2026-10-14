@@ -26,6 +26,7 @@
     undo: svg('<path d="M9 8L4.5 12.5 9 17M5 12.5h9.5a5 5 0 010 10H12" transform="translate(0 -3)"/>'),
     redo: svg('<path d="M15 8l4.5 4.5L15 17M19 12.5H9.5a5 5 0 000 10H12" transform="translate(0 -3)"/>'),
     card: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M5.5 16.5c.5-1.6 2-2.3 3.5-2.3s3 .7 3.5 2.3M14.5 10h3.5M14.5 13.5H17"/>'),
+    upload: svg('<path d="M12 16V5M7.5 9.5L12 5l4.5 4.5"/><path d="M4.5 15v3a1.5 1.5 0 001.5 1.5h12a1.5 1.5 0 001.5-1.5v-3"/>'),
     chevron: svg('<path d="M6 9l6 6 6-6"/>'),
   };
 
@@ -218,6 +219,7 @@
       root.querySelectorAll('b, strong, i, em, s, strike, del, u, span, font, code').forEach((el) => {
         if (!el.closest('pre') && isEmpty(el)) el.replaceWith(...el.childNodes);
       });
+      root.querySelectorAll('img[data-up]').forEach((img) => img.remove());
       root.querySelectorAll('li').forEach((li) => {
         if (!li.querySelector('img, table, ul, ol, sup.fnm') && isEmpty(li)) li.remove();
       });
@@ -829,7 +831,9 @@
         ${existing ? '' : `<div class="we-field"><label>양식</label>
           <select id="ib-preset">${Object.entries(I.PRESETS).map(([k, v]) => `<option value="${k}">${esc(v.name)}</option>`).join('')}</select></div>`}
         <div class="we-field"><label>제목 <small>(이름)</small></label><input type="text" id="ib-title" maxlength="60" placeholder="문서 제목과 같게 써도 좋아요"></div>
-        <div class="we-field"><label>사진 주소 <small>(선택, https://…)</small></label><input type="url" id="ib-image" placeholder="https://"></div>
+        <div class="we-field"><label>사진 <small>(선택)</small></label>
+          <div class="ib-imgrow"><input type="url" id="ib-image" placeholder="https://… 주소를 붙이거나 →"><button type="button" class="ib-upbtn" id="ib-upbtn">${ICON.upload}<span>사진 올리기</span></button><input type="file" id="ib-file" accept="${IMG_ACCEPT}" hidden></div>
+          <div class="we-upmsg" id="ib-upmsg" hidden></div></div>
         <div class="we-field"><label>사진 설명 <small>(선택)</small></label><input type="text" id="ib-caption" maxlength="80"></div>
         <div class="we-field"><label>항목 <small>(내용에는 [[문서 링크]] 를 쓸 수 있어요)</small></label><div class="ib-rows" id="ib-rows"></div>
           <div class="ib-add"><button type="button" id="ib-add-row">＋ 항목</button><button type="button" id="ib-add-head">＋ 구분 제목</button></div></div>
@@ -877,6 +881,30 @@
         if (preset) preset.addEventListener('change', () => { rows = I.presetRows(preset.value); render(); });
         q('#ib-title').focus();
 
+        const upBtn = q('#ib-upbtn');
+        const upMsg = q('#ib-upmsg');
+        upBtn.addEventListener('click', () => q('#ib-file').click());
+        q('#ib-file').addEventListener('change', async (e) => {
+          const f = e.target.files[0];
+          e.target.value = '';
+          if (!f) return;
+          upMsg.hidden = false;
+          upMsg.className = 'we-upmsg';
+          if (!isImageFile(f)) { upMsg.className = 'we-upmsg err'; upMsg.textContent = 'PNG, JPG, GIF, WEBP 이미지만 올릴 수 있어요.'; return; }
+          upBtn.disabled = true;
+          upMsg.textContent = '올리는 중… 0%';
+          try {
+            const { url } = await opts.uploadImage(f, (p) => { upMsg.textContent = `올리는 중… ${Math.round(p * 100)}%`; });
+            q('#ib-image').value = url;
+            q('#ib-image').classList.remove('bad');
+            upMsg.textContent = '✓ 올렸어요. 확인을 누르면 상자에 반영돼요.';
+          } catch (err) {
+            upMsg.className = 'we-upmsg err';
+            upMsg.textContent = err.message || '업로드에 실패했어요.';
+          }
+          upBtn.disabled = false;
+        });
+
         const del = q('#ib-del');
         if (del) del.addEventListener('click', () => { existing.remove(); prepare(); changed(); close(); });
 
@@ -898,26 +926,141 @@
       });
     }
 
+    /* --- 이미지 올리기 --- */
+    const IMG_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
+    const isImageFile = (f) => f && /^image\/(png|jpe?g|gif|webp)$/i.test(f.type);
+    let uploading = 0; // 올리는 중인 이미지 수
+
+    function showToast(msg, kind) {
+      let t = mount.querySelector('.we-toast');
+      if (!t) {
+        t = document.createElement('div');
+        t.className = 'we-toast';
+        t.setAttribute('role', 'status');
+        mount.querySelector('.we').appendChild(t);
+      }
+      t.textContent = msg;
+      t.className = `we-toast ${kind || ''}`;
+      clearTimeout(t._timer);
+      if (kind !== 'busy') t._timer = setTimeout(() => t.remove(), 4500);
+    }
+
+    /* 올리는 동안 보여 줄 임시 이미지를 문서에 넣고, 끝나면 실제 주소로 바꾼다 */
+    async function uploadAndInsert(file) {
+      if (!opts.uploadImage || mode !== 'rich') return;
+      const id = `u${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const preview = URL.createObjectURL(file);
+      restoreRange();
+      insertHtml(`<img data-up="${id}" class="we-uploading" src="${preview}" alt="">`);
+      uploading++;
+      showToast('이미지를 올리는 중… 0%', 'busy');
+      const find = () => editorEl.querySelector(`img[data-up="${id}"]`);
+      try {
+        const { url } = await opts.uploadImage(file, (p) => showToast(`이미지를 올리는 중… ${Math.round(p * 100)}%`, 'busy'));
+        const img = find();
+        if (img) {
+          img.src = url;
+          img.removeAttribute('data-up');
+          img.classList.remove('we-uploading');
+        }
+        showToast('이미지를 올렸어요');
+      } catch (err) {
+        const img = find();
+        if (img) img.remove();
+        showToast(err.message || '업로드에 실패했어요', 'error');
+      } finally {
+        uploading--;
+        URL.revokeObjectURL(preview);
+        changed();
+      }
+    }
+
     function openImageDialog() {
       saveRange();
       openDialog(`
         <h3>이미지</h3>
-        <div class="we-field"><label>이미지 주소</label><input type="url" id="im-src" placeholder="https://"></div>
+        <div class="we-tabs">
+          <button type="button" data-tab="up" class="on">사진 올리기</button>
+          <button type="button" data-tab="url">주소 입력</button>
+        </div>
+        <div class="we-field" data-pane="up">
+          <label class="we-dropzone" id="im-drop">
+            <input type="file" id="im-file" accept="${IMG_ACCEPT}" hidden>
+            <span class="we-drop-icon">${ICON.upload}</span>
+            <strong>사진을 끌어다 놓거나 눌러서 고르세요</strong>
+            <small>PNG · JPG · GIF · WEBP, 5MB 이하 (큰 사진은 자동으로 줄여서 올려요)</small>
+          </label>
+          <div class="we-upstatus" id="im-status" hidden>
+            <img id="im-thumb" alt="">
+            <div class="we-upinfo"><div id="im-name"></div><div class="we-bar"><span id="im-bar"></span></div><div class="we-upmsg" id="im-msg"></div></div>
+          </div>
+        </div>
+        <div class="we-field" data-pane="url" hidden><label>이미지 주소</label><input type="url" id="im-src" placeholder="https://"></div>
         <div class="we-field"><label>설명 <small>(선택)</small></label><input type="text" id="im-alt" placeholder="이미지 설명"></div>
-        <div class="we-dialog-actions"><button type="button" data-close>취소</button><button type="button" class="primary" id="im-ok">확인</button></div>`,
+        <div class="we-dialog-actions"><button type="button" data-close>취소</button><button type="button" class="primary" id="im-ok" disabled>확인</button></div>`,
       (dlg, close) => {
-        const src = dlg.querySelector('#im-src');
-        src.focus();
+        const q = (id) => dlg.querySelector(id);
+        const ok = q('#im-ok');
+        let tab = 'up';
+        let uploadedUrl = '';
+        let thumbUrl = '';
+        const refreshOk = () => { ok.disabled = tab === 'up' ? !uploadedUrl : !q('#im-src').value.trim(); };
+        const setTab = (t) => {
+          tab = t;
+          dlg.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+          dlg.querySelectorAll('[data-pane]').forEach((p) => { p.hidden = p.dataset.pane !== t; });
+          if (t === 'url') q('#im-src').focus();
+          refreshOk();
+        };
+        dlg.querySelectorAll('[data-tab]').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
+        q('#im-src').addEventListener('input', () => { q('#im-src').classList.remove('bad'); refreshOk(); });
+
+        const start = async (file) => {
+          if (!isImageFile(file)) { q('#im-status').hidden = false; q('#im-msg').textContent = 'PNG, JPG, GIF, WEBP 이미지만 올릴 수 있어요.'; q('#im-msg').className = 'we-upmsg err'; return; }
+          uploadedUrl = '';
+          refreshOk();
+          if (thumbUrl) URL.revokeObjectURL(thumbUrl);
+          thumbUrl = URL.createObjectURL(file);
+          q('#im-status').hidden = false;
+          q('#im-thumb').src = thumbUrl;
+          q('#im-name').textContent = file.name;
+          q('#im-bar').style.width = '0%';
+          q('#im-msg').className = 'we-upmsg';
+          q('#im-msg').textContent = '올리는 중…';
+          try {
+            const { url } = await opts.uploadImage(file, (p) => { q('#im-bar').style.width = `${Math.round(p * 100)}%`; });
+            uploadedUrl = url;
+            q('#im-bar').style.width = '100%';
+            q('#im-msg').textContent = '✓ 올렸어요. 확인을 누르면 문서에 넣어요.';
+            ok.focus();
+          } catch (err) {
+            q('#im-bar').style.width = '0%';
+            q('#im-msg').className = 'we-upmsg err';
+            q('#im-msg').textContent = err.message || '업로드에 실패했어요.';
+          }
+          refreshOk();
+        };
+        const drop = q('#im-drop');
+        q('#im-file').addEventListener('change', (e) => { if (e.target.files[0]) start(e.target.files[0]); });
+        ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+        ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
+        drop.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f) start(f); });
+
         const submit = () => {
-          const url = src.value.trim();
-          if (!/^https?:\/\//i.test(url)) { src.focus(); src.classList.add('bad'); return; }
-          const alt = dlg.querySelector('#im-alt').value.trim();
+          let url;
+          if (tab === 'up') url = uploadedUrl;
+          else {
+            url = q('#im-src').value.trim();
+            if (!/^https?:\/\//i.test(url)) { q('#im-src').focus(); q('#im-src').classList.add('bad'); return; }
+          }
+          if (!url) return;
+          const alt = q('#im-alt').value.trim();
           close();
           restoreRange();
           insertHtml(`<img src="${esc(url)}" alt="${esc(alt)}">`);
         };
-        dlg.querySelector('#im-ok').addEventListener('click', submit);
-        dlg.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') { e.preventDefault(); submit(); } });
+        ok.addEventListener('click', submit);
+        dlg.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'file' && !ok.disabled) { e.preventDefault(); submit(); } });
       });
     }
 
@@ -1011,6 +1154,9 @@
     on(editorEl, 'paste', (e) => {
       e.preventDefault();
       const cd = e.clipboardData;
+      // 캡처나 복사한 이미지는 외부 주소로 걸지 않고 위키 저장소에 올려서 넣는다
+      const imgs = [...(cd.files || [])].filter(isImageFile);
+      if (imgs.length && opts.uploadImage) { imgs.forEach((f) => uploadAndInsert(f)); return; }
       const html = cd.getData('text/html');
       const text = cd.getData('text/plain');
       if (html && !/<meta name=["']?wiki/.test(html)) {
@@ -1025,13 +1171,25 @@
       prepare();
       changed();
     });
-    on(editorEl, 'drop', (e) => { if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) e.preventDefault(); });
+    on(editorEl, 'dragover', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+    on(editorEl, 'drop', (e) => {
+      const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+      if (!files.length) return;
+      e.preventDefault();
+      const imgs = files.filter(isImageFile);
+      if (!imgs.length) { showToast('PNG, JPG, GIF, WEBP 이미지만 넣을 수 있어요.', 'error'); return; }
+      // 놓은 자리에 커서를 옮긴 뒤 넣는다
+      const pt = document.caretRangeFromPoint ? document.caretRangeFromPoint(e.clientX, e.clientY) : null;
+      if (pt && inEditor(pt.startContainer)) { sel().removeAllRanges(); sel().addRange(pt); saveRange(); }
+      imgs.forEach((f) => uploadAndInsert(f));
+    });
 
     /* --- 외부 API --- */
     return {
       setMarkdown,
       getMarkdown,
       focus() { (mode === 'rich' ? editorEl : mdEl).focus(); },
+      isBusy: () => uploading > 0,
       destroy() {
         listeners.forEach((off) => off());
         document.querySelectorAll('.we-overlay').forEach((o) => o.remove());
