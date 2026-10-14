@@ -507,6 +507,75 @@
     window.scrollTo(0, 0);
   }
 
+  /* ---------- 이미지 업로드 (Supabase Storage) ---------- */
+
+  const IMG_BUCKET = 'wiki-images';
+  const IMG_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+  const IMG_MAX_BYTES = 5 * 1024 * 1024; // 서버(버킷) 제한과 같은 값
+  const IMG_MAX_SIDE = 1600; // 이보다 크면 긴 변을 이 크기로 줄여서 올린다
+  const IMG_KEEP_BYTES = 1.5 * 1024 * 1024; // 크기가 이 이하이고 해상도도 작으면 원본 그대로 올린다
+
+  const imgError = (msg) => Object.assign(new Error(msg), { code: 'upload' });
+
+  /* 큰 사진은 올리기 전에 줄인다 (저장 공간과 로딩 시간 절약). GIF 는 움직임이 사라지므로 그대로 둔다. */
+  async function prepareImage(file) {
+    if (!IMG_EXT[file.type]) throw imgError('PNG, JPG, GIF, WEBP 이미지만 올릴 수 있어요.');
+    let out = file;
+    if (file.type !== 'image/gif' && typeof createImageBitmap === 'function') {
+      try {
+        const bmp = await createImageBitmap(file);
+        const scale = Math.min(1, IMG_MAX_SIDE / Math.max(bmp.width, bmp.height));
+        if (scale < 1 || file.size > IMG_KEEP_BYTES) {
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(bmp.width * scale));
+          canvas.height = Math.max(1, Math.round(bmp.height * scale));
+          canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+          const blob = await new Promise((res) => canvas.toBlob(res, file.type, 0.85));
+          // 형식이 바뀌었거나(브라우저가 인코딩을 지원하지 않음) 오히려 커졌으면 원본을 쓴다
+          if (blob && blob.type === file.type && (scale < 1 || blob.size < file.size)) out = blob;
+        }
+        if (bmp.close) bmp.close();
+      } catch (e) { /* 읽을 수 없으면 원본 그대로 */ }
+    }
+    if (out.size > IMG_MAX_BYTES) throw imgError('이미지가 너무 커요. 5MB 이하로 올려 주세요.');
+    return out;
+  }
+
+  const randomId = () => (crypto.randomUUID ? crypto.randomUUID() : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+
+  const uploadErrorText = (status, body) => {
+    const code = body && (body.error || body.code);
+    if (status === 413 || (body && body.statusCode == 413)) return '이미지가 너무 커요. 5MB 이하로 올려 주세요.';
+    if (code === 'invalid_mime_type' || (body && body.statusCode == 415)) return 'PNG, JPG, GIF, WEBP 이미지만 올릴 수 있어요.';
+    if (status === 403 || (body && (body.statusCode == 403 || /row-level security/i.test(body.message || '')))) return '지금은 올릴 수 없어요. 짧은 시간에 너무 많이 올렸거나 업로드가 제한된 상태예요. 잠시 뒤 다시 시도해 주세요.';
+    return '업로드에 실패했어요. 잠시 뒤 다시 시도해 주세요.';
+  };
+
+  /* 파일을 Storage 에 올리고 공개 주소를 돌려준다. onProgress(0~1) 로 진행률을 알린다. */
+  async function uploadImage(file, onProgress) {
+    const blob = await prepareImage(file);
+    const d = new Date();
+    const path = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${randomId()}.${IMG_EXT[blob.type]}`;
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${C.supabaseUrl}/storage/v1/object/${IMG_BUCKET}/${path}`);
+      xhr.setRequestHeader('apikey', C.supabaseKey);
+      xhr.setRequestHeader('Content-Type', blob.type);
+      xhr.setRequestHeader('x-upsert', 'false');
+      xhr.setRequestHeader('cache-control', 'max-age=31536000');
+      if (onProgress) xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) return resolve();
+        let body = null;
+        try { body = JSON.parse(xhr.responseText); } catch (e) {}
+        reject(imgError(uploadErrorText(xhr.status, body)));
+      };
+      xhr.onerror = () => reject(imgError('서버에 연결할 수 없어요. 잠시 뒤 다시 시도해 주세요.'));
+      xhr.send(blob);
+    });
+    return { url: `${C.supabaseUrl}/storage/v1/object/public/${IMG_BUCKET}/${path}` };
+  }
+
   /* ---------- 편집 ---------- */
 
   let wikiEditor = null;
@@ -615,6 +684,7 @@
         const t = String(dest || '').split('#')[0].trim();
         return !!t && !/^https?:\/\//i.test(t) && !/^분류:/.test(t) && !BY_TITLE.has(t);
       },
+      uploadImage,
       onChange: markDirty,
     });
     wikiEditor.setMarkdown(body);
@@ -629,6 +699,11 @@
     const saveBtn = $('#ed-save');
     saveBtn.addEventListener('click', async () => {
       errBox.hidden = true;
+      if (wikiEditor.isBusy()) {
+        errBox.hidden = false;
+        errBox.textContent = '이미지를 올리는 중이에요. 올리기가 끝난 뒤에 저장해 주세요.';
+        return;
+      }
       saveBtn.disabled = true;
       saveBtn.textContent = '저장 중…';
       const author = $('#ed-author').value.trim();
