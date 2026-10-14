@@ -453,6 +453,103 @@
 
   /* ---------- 편집 ---------- */
 
+  let editor = null;
+
+  function destroyEditor() {
+    if (!editor) return;
+    try {
+      if (editor.isFullscreenActive()) EasyMDE.toggleFullScreen(editor);
+      editor.toTextArea();
+    } catch (e) {}
+    editor = null;
+  }
+
+  /* 선택한 글자를 before/after 로 감싼다. 이미 감싸져 있으면 벗긴다. 선택이 없으면 사이에 커서를 둔다. */
+  function wrapSelection(cm, before, after, placeholder = '') {
+    const sel = cm.getSelection();
+    if (sel && sel.startsWith(before) && sel.endsWith(after) && sel.length >= before.length + after.length) {
+      cm.replaceSelection(sel.slice(before.length, sel.length - after.length), 'around');
+    } else if (sel) {
+      cm.replaceSelection(before + sel + after, 'around');
+    } else {
+      const from = cm.getCursor();
+      cm.replaceSelection(before + placeholder + after);
+      const start = { line: from.line, ch: from.ch + before.length };
+      cm.setSelection(start, { line: start.line, ch: start.ch + placeholder.length });
+    }
+    cm.focus();
+  }
+
+  /* 현재 줄(선택한 모든 줄)의 제목 단계를 level 로 바꾼다. 같은 단계면 제목을 해제한다. */
+  function setHeading(cm, level) {
+    const from = cm.getCursor('from').line;
+    const to = cm.getCursor('to').line;
+    const prefix = '#'.repeat(level) + ' ';
+    cm.operation(() => {
+      for (let i = from; i <= to; i++) {
+        const text = cm.getLine(i);
+        const m = /^(#{1,6})\s+/.exec(text);
+        const rest = m ? text.slice(m[0].length) : text;
+        const same = m && m[1].length === level;
+        cm.replaceRange(same ? rest : prefix + rest, { line: i, ch: 0 }, { line: i, ch: text.length });
+      }
+    });
+    cm.focus();
+  }
+
+  function editorToolbar() {
+    const btn = (name, text, title, action, extra = {}) => ({ name, text, title, action, className: `tb tb-${name}`, ...extra });
+    const sep = (n) => ({ name: `sep-${n}` });
+    return [
+      btn('bold', 'B', '굵게', EasyMDE.toggleBold),
+      btn('italic', 'I', '기울임', EasyMDE.toggleItalic),
+      btn('strike', 'S', '취소선', EasyMDE.toggleStrikethrough),
+      btn('code', '</>', '코드', EasyMDE.toggleCodeBlock),
+      sep(1),
+      btn('h2', 'H2', '큰 제목 (Ctrl+2)', (e) => setHeading(e.codemirror, 2)),
+      btn('h3', 'H3', '중간 제목 (Ctrl+3)', (e) => setHeading(e.codemirror, 3)),
+      btn('h4', 'H4', '작은 제목 (Ctrl+4)', (e) => setHeading(e.codemirror, 4)),
+      sep(2),
+      btn('ul', '• 목록', '글머리 목록', EasyMDE.toggleUnorderedList),
+      btn('ol', '1. 목록', '번호 목록', EasyMDE.toggleOrderedList),
+      btn('quote', '❝ 인용', '인용문', EasyMDE.toggleBlockquote),
+      btn('table', '표', '표 삽입', EasyMDE.drawTable),
+      btn('hr', '―', '가로줄', EasyMDE.drawHorizontalRule),
+      sep(3),
+      btn('wikilink', '[[문서]]', '문서 링크 (Ctrl+K)', (e) => wrapSelection(e.codemirror, '[[', ']]', '문서 제목')),
+      btn('footnote', '각주', '각주 (Ctrl+Shift+F)', (e) => wrapSelection(e.codemirror, '[* ', ']', '각주 내용')),
+      btn('link', '외부 링크', '외부 링크 (Ctrl+Alt+K)', EasyMDE.drawLink),
+      btn('image', '이미지', '이미지 주소 넣기', EasyMDE.drawImage),
+      sep(4),
+      btn('undo', '↶', '실행 취소 (Ctrl+Z)', EasyMDE.undo),
+      btn('redo', '↷', '다시 실행 (Ctrl+Y)', EasyMDE.redo),
+      sep(5),
+      btn('preview', '미리보기', '미리보기', EasyMDE.togglePreview, { noDisable: true }),
+      btn('side', '나란히 보기', '편집·미리보기 나란히', (e) => {
+        // EasyMDE 는 나란히 보기를 켜면 전체화면도 같이 켠다. 끌 때는 전체화면도 함께 닫는다.
+        const wasOn = e.isSideBySideActive();
+        EasyMDE.toggleSideBySide(e);
+        if (wasOn && e.isFullscreenActive()) EasyMDE.toggleFullScreen(e);
+      }, { noDisable: true, noMobile: true }),
+      btn('fullscreen', '전체화면', '전체화면', EasyMDE.toggleFullScreen, { noDisable: true, noMobile: true }),
+      btn('guide', '? 문법', '문법 도움말 (새 탭)', () => window.open(`#/w/${enc('문법 도움말')}`, '_blank', 'noopener'), { noDisable: true }),
+    ];
+  }
+
+  /* [[문서 링크]] 를 편집창에서도 색으로 구분해 준다. */
+  function markWikiLinks(cm, marks) {
+    marks.forEach((m) => m.clear());
+    marks.length = 0;
+    const text = cm.getValue();
+    const re = /\[\[[^\[\]\n]+?\]\]/g;
+    let m;
+    cm.operation(() => {
+      while ((m = re.exec(text))) {
+        marks.push(cm.markText(cm.posFromIndex(m.index), cm.posFromIndex(m.index + m[0].length), { className: 'cm-wikilink' }));
+      }
+    });
+  }
+
   async function viewEdit(title, params) {
     const ok = guard();
     loading();
@@ -475,13 +572,7 @@
       <div class="doc-head"><h1>${esc(title)} <small>${row ? `편집 (r${row.rev} 기준)` : '새 문서'}</small></h1>${tabsHtml(title, 'edit')}</div>
       ${old ? `<p class="notice">r${old.rev} 판 내용을 불러왔습니다. 저장하면 이 내용으로 되돌립니다.</p>` : ''}
       <div class="editor">
-        <div class="editor-tabs">
-          <button type="button" class="active" data-pane="write">편집</button>
-          <button type="button" data-pane="preview">미리보기</button>
-          <a class="help" href="#/w/${enc('문법 도움말')}" target="_blank" rel="noopener">문법 도움말 ↗</a>
-        </div>
-        <textarea id="ed-text" spellcheck="false" aria-label="문서 내용"></textarea>
-        <div id="ed-preview" class="preview" hidden></div>
+        <textarea id="ed-text" aria-label="문서 내용"></textarea>
         <div class="editor-fields">
           <label>닉네임 <input id="ed-author" maxlength="20" placeholder="익명"></label>
           <label class="grow">편집 요약 <input id="ed-summary" maxlength="200" placeholder="무엇을 고쳤는지 간단히"></label>
@@ -494,23 +585,58 @@
         </div>
       </div>`);
 
-    const ta = $('#ed-text');
-    ta.value = initial;
-    $('#ed-author').value = store.get('wiki-nick');
-    $('#ed-summary').value = defaultSummary;
+    editor = new EasyMDE({
+      element: $('#ed-text'),
+      initialValue: initial,
+      autoDownloadFontAwesome: false,
+      spellChecker: false,
+      nativeSpellcheck: false,
+      status: ['lines', 'words'],
+      minHeight: '50vh',
+      toolbar: editorToolbar(),
+      placeholder: '내용을 입력하세요. 위쪽 버튼이나 단축키로 서식을 넣을 수 있습니다.',
+      shortcuts: {
+        toggleBold: 'Ctrl-B', toggleItalic: 'Ctrl-I', togglePreview: 'Ctrl-P', toggleFullScreen: 'F11',
+        // 아래는 위키 전용 단축키(addKeyMap)와 겹치거나 쓰지 않는 기본값이라 끈다.
+        drawLink: null, toggleSideBySide: null, toggleHeadingSmaller: null, toggleHeadingBigger: null,
+        toggleHeading1: null, toggleHeading2: null, toggleHeading3: null, cleanBlock: null,
+        toggleCodeBlock: null, toggleBlockquote: null, toggleUnorderedList: null, toggleOrderedList: null,
+        drawImage: null, drawTable: null, drawHorizontalRule: null, toggleStrikethrough: null,
+      },
+      previewRender(text) {
+        const box = document.createElement('div');
+        renderBodyInto(box, text);
+        return box.innerHTML;
+      },
+    });
+
+    const cm = editor.codemirror;
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const mod = isMac ? 'Cmd' : 'Ctrl';
+    // addKeyMap 은 키 이름을 정규화하지 않는다. 수식키 순서는 Shift-Cmd/Ctrl-Alt 여야 한다.
+    cm.addKeyMap({
+      [`${mod}-K`]: () => wrapSelection(cm, '[[', ']]', '문서 제목'),
+      [`Shift-${mod}-F`]: () => wrapSelection(cm, '[* ', ']', '각주 내용'),
+      [`${mod}-Alt-K`]: () => EasyMDE.drawLink(editor),
+      [`${mod}-2`]: () => setHeading(cm, 2),
+      [`${mod}-3`]: () => setHeading(cm, 3),
+      [`${mod}-4`]: () => setHeading(cm, 4),
+    });
+
+    const linkMarks = [];
+    let markTimer = 0;
+    const scheduleMarks = () => {
+      clearTimeout(markTimer);
+      markTimer = setTimeout(() => editor && markWikiLinks(cm, linkMarks), 150);
+    };
+    markWikiLinks(cm, linkMarks);
+
     let dirty = false;
-    ta.addEventListener('input', () => { dirty = true; });
+    cm.on('change', () => { dirty = true; scheduleMarks(); });
     window.onbeforeunload = () => (dirty ? '저장하지 않은 내용이 있습니다.' : undefined);
 
-    document.querySelectorAll('.editor-tabs button').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.editor-tabs button').forEach((b) => b.classList.toggle('active', b === btn));
-        const preview = btn.dataset.pane === 'preview';
-        ta.hidden = preview;
-        $('#ed-preview').hidden = !preview;
-        if (preview) renderBodyInto($('#ed-preview'), ta.value);
-      });
-    });
+    $('#ed-author').value = store.get('wiki-nick');
+    $('#ed-summary').value = defaultSummary;
 
     const errBox = $('#ed-error');
     const saveBtn = $('#ed-save');
@@ -522,7 +648,7 @@
       try {
         await api.edit({
           p_title: title,
-          p_content: ta.value,
+          p_content: editor.value(),
           p_base_rev: baseRev,
           p_summary: $('#ed-summary').value,
           p_author: author,
@@ -668,6 +794,7 @@
   async function route() {
     routeId++;
     window.onbeforeunload = null;
+    destroyEditor();
     hideSuggest();
     const raw = location.hash.replace(/^#/, '') || '/';
     const qi = raw.indexOf('?');
