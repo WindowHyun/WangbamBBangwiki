@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>왕밤빵 위키</title>
+  <meta name="description" content="누구나 고쳐 쓰는 마크다운 기반 위키">
+  <link rel="stylesheet" href="assets/style.css">
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('wiki-theme');
+        if (t) document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#/" id="brand">위키</a>
+      <form class="search" id="search-form" role="search" autocomplete="off">
+        <input id="search-input" type="search" placeholder="문서 검색" aria-label="문서 검색">
+        <button type="submit" aria-label="검색">🔍</button>
+        <ul class="suggest" id="suggest" hidden></ul>
+      </form>
+      <nav class="topnav">
+        <a href="#/recent">최근 변경</a>
+        <a href="#/random">랜덤</a>
+        <a href="#/all">전체 문서</a>
+        <button type="button" id="theme-toggle" title="다크 모드 전환" aria-label="다크 모드 전환">🌓</button>
+      </nav>
+    </div>
+  </header>
+
+  <div class="layout">
+    <main id="app" class="main"><p class="loading">불러오는 중…</p></main>
+    <aside id="side" class="side" aria-label="최근 변경"></aside>
+  </div>
+
+  <footer class="footer" id="footer"></footer>
+
+  <noscript><p style="padding:1rem">이 위키는 JavaScript가 필요합니다.</p></noscript>
+  <script src="assets/vendor/marked.min.js"></script>
+  <script src="assets/vendor/purify.min.js"></script>
+  <script src="assets/config.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
