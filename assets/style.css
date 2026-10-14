@@ -486,3 +486,24 @@ sup.fn a { font-size: .8em; padding: 0 1px; }
 .we-toast.error { background: #c0392b; }
 :root[data-theme="dark"] .we-toast { background: #eee; color: #111; }
 :root[data-theme="dark"] .we-toast.error { background: #ff7b72; color: #111; }
+
+/* ---------- 앱(PWA) ---------- */
+.offline-bar {
+  padding: 8px 16px; background: #fff3cd; color: #664d03; border-bottom: 1px solid #ffe69c; font-size: .86rem; text-align: center;
+}
+.offline-bar[hidden] { display: none; }
+:root[data-theme="dark"] .offline-bar { background: #3d3410; color: #ffe69c; border-color: #6b5a1a; }
+.pwa-toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 80; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px 10px 18px; border-radius: 999px;
+  background: #222; color: #fff; font-size: .9rem; box-shadow: 0 6px 24px rgba(0, 0, 0, .3);
+}
+.pwa-toast button { border: 0; border-radius: 999px; padding: 5px 14px; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
+.pwa-toast button.x { background: transparent; padding: 5px 8px; color: #bbb; }
+:root[data-theme="dark"] .pwa-toast { background: #eee; color: #111; }
+/* 아이폰 노치·홈 바 영역을 피한다 (홈 화면 앱으로 열었을 때) */
+.topbar { padding-top: env(safe-area-inset-top); }
+.topbar-inner { padding-left: max(16px, env(safe-area-inset-left)); padding-right: max(16px, env(safe-area-inset-right)); }
+.submit-bar { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+.footer { padding-bottom: env(safe-area-inset-bottom); }
+.footer a#install-app { font-weight: 700; }
