@@ -25,6 +25,7 @@
     codeblock: svg('<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 10l-2 2 2 2M14.5 10l2 2-2 2"/>'),
     undo: svg('<path d="M9 8L4.5 12.5 9 17M5 12.5h9.5a5 5 0 010 10H12" transform="translate(0 -3)"/>'),
     redo: svg('<path d="M15 8l4.5 4.5L15 17M19 12.5H9.5a5 5 0 000 10H12" transform="translate(0 -3)"/>'),
+    card: svg('<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M5.5 16.5c.5-1.6 2-2.3 3.5-2.3s3 .7 3.5 2.3M14.5 10h3.5M14.5 13.5H17"/>'),
     chevron: svg('<path d="M6 9l6 6 6-6"/>'),
   };
 
@@ -75,6 +76,11 @@
         const label = node.textContent.replace(/[\u200b\[\]|\uE000]/g, '').replace(/\s+/g, ' ').trim();
         return `[[${label && label !== dest ? `${dest}${sep}${label}` : dest}]]`;
       },
+    });
+
+    td.addRule('wikiInfobox', {
+      filter: (node) => node.nodeName === 'ASIDE' && node.classList.contains('infobox'),
+      replacement: (content, node) => `\n\n:::infobox\n${(node.getAttribute('data-ib') || '').trim()}\n:::\n\n`,
     });
 
     td.addRule('wikiStrike', {
@@ -183,6 +189,10 @@
         } else {
           sp.replaceWith(...sp.childNodes);
         }
+      });
+      editorEl.querySelectorAll('aside.infobox').forEach((a) => {
+        a.setAttribute('contenteditable', 'false');
+        a.classList.add('ib-edit');
       });
       editorEl.querySelectorAll('sup.fnm').forEach((s) => {
         s.setAttribute('contenteditable', 'false');
@@ -450,6 +460,7 @@
           <div class="we-menu">
             <button type="button" class="we-btn we-drop" data-menu="insert" title="더 넣기" aria-haspopup="true">${ICON.plus}<span>삽입</span></button>
             <div class="we-menu-list" data-for="insert" hidden>
+              <button type="button" data-insert="infobox">${ICON.card}<span>프로필 상자</span></button>
               <button type="button" data-insert="table">${ICON.table}<span>표</span></button>
               <button type="button" data-insert="hr">${ICON.hr}<span>구분선</span></button>
               <button type="button" data-insert="codeblock">${ICON.codeblock}<span>코드 블록</span></button>
@@ -488,7 +499,8 @@
       if (btn.dataset.insert) {
         closeMenus();
         const k = btn.dataset.insert;
-        if (k === 'table') insertTable();
+        if (k === 'infobox') openInfoboxDialog();
+        else if (k === 'table') insertTable();
         else if (k === 'hr') exec('insertHorizontalRule');
         else if (k === 'codeblock') insertCodeBlock();
         return;
@@ -787,6 +799,86 @@
       insertHtml(`${el.outerHTML}&#8203;`);
     }
 
+    /* 프로필 상자: 새로 만들거나(existing 없음) 기존 상자를 고친다 */
+    function openInfoboxDialog(existing) {
+      saveRange();
+      const I = window.WikiInfobox;
+      const data = existing ? I.parse(existing.getAttribute('data-ib') || '') : { title: '', image: '', caption: '', rows: I.presetRows('person') };
+      let rows = data.rows.map((r) => ({ ...r }));
+      openDialog(`
+        <h3>프로필 상자</h3>
+        ${existing ? '' : `<div class="we-field"><label>양식</label>
+          <select id="ib-preset">${Object.entries(I.PRESETS).map(([k, v]) => `<option value="${k}">${esc(v.name)}</option>`).join('')}</select></div>`}
+        <div class="we-field"><label>제목 <small>(이름)</small></label><input type="text" id="ib-title" maxlength="60" placeholder="문서 제목과 같게 써도 좋아요"></div>
+        <div class="we-field"><label>사진 주소 <small>(선택, https://…)</small></label><input type="url" id="ib-image" placeholder="https://"></div>
+        <div class="we-field"><label>사진 설명 <small>(선택)</small></label><input type="text" id="ib-caption" maxlength="80"></div>
+        <div class="we-field"><label>항목 <small>(내용에는 [[문서 링크]] 를 쓸 수 있어요)</small></label><div class="ib-rows" id="ib-rows"></div>
+          <div class="ib-add"><button type="button" id="ib-add-row">＋ 항목</button><button type="button" id="ib-add-head">＋ 구분 제목</button></div></div>
+        <div class="we-dialog-actions">
+          ${existing ? '<button type="button" class="danger" id="ib-del">상자 삭제</button><span class="grow"></span>' : ''}
+          <button type="button" data-close>취소</button><button type="button" class="primary" id="ib-ok">확인</button>
+        </div>`,
+      (dlg, close) => {
+        dlg.classList.add('wide');
+        const list = dlg.querySelector('#ib-rows');
+        const q = (id) => dlg.querySelector(id);
+        q('#ib-title').value = data.title;
+        q('#ib-image').value = data.image;
+        q('#ib-caption').value = data.caption;
+
+        const ctl = '<span class="ib-ctl"><button type="button" data-a="up" title="위로" aria-label="위로">↑</button><button type="button" data-a="down" title="아래로" aria-label="아래로">↓</button><button type="button" data-a="del" title="삭제" aria-label="삭제">✕</button></span>';
+        const render = () => {
+          list.innerHTML = rows.map((r, i) => r.type === 'head'
+            ? `<div class="ib-row ib-head-row" data-i="${i}"><input data-f="label" value="${esc(r.label)}" placeholder="구분 제목" aria-label="구분 제목">${ctl}</div>`
+            : `<div class="ib-row" data-i="${i}"><input class="ib-l" data-f="label" value="${esc(r.label)}" placeholder="항목" aria-label="항목 이름"><input class="ib-v" data-f="value" value="${esc(r.value)}" placeholder="내용" aria-label="항목 내용">${ctl}</div>`).join('');
+        };
+        render();
+        list.addEventListener('input', (e) => {
+          const row = e.target.closest('.ib-row');
+          if (row && e.target.dataset.f) rows[+row.dataset.i][e.target.dataset.f] = e.target.value;
+        });
+        list.addEventListener('click', (e) => {
+          const b = e.target.closest('button[data-a]');
+          if (!b) return;
+          const i = +b.closest('.ib-row').dataset.i;
+          if (b.dataset.a === 'del') rows.splice(i, 1);
+          else if (b.dataset.a === 'up' && i > 0) [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]];
+          else if (b.dataset.a === 'down' && i < rows.length - 1) [rows[i + 1], rows[i]] = [rows[i], rows[i + 1]];
+          render();
+        });
+        const add = (type) => {
+          rows.push({ type, label: '', value: '' });
+          render();
+          const last = list.querySelector('.ib-row:last-child input');
+          if (last) last.focus();
+        };
+        q('#ib-add-row').addEventListener('click', () => add('row'));
+        q('#ib-add-head').addEventListener('click', () => add('head'));
+        const preset = q('#ib-preset');
+        if (preset) preset.addEventListener('change', () => { rows = I.presetRows(preset.value); render(); });
+        q('#ib-title').focus();
+
+        const del = q('#ib-del');
+        if (del) del.addEventListener('click', () => { existing.remove(); prepare(); changed(); close(); });
+
+        q('#ib-ok').addEventListener('click', () => {
+          const image = q('#ib-image').value.trim();
+          if (image && !/^https?:\/\//i.test(image)) { q('#ib-image').classList.add('bad'); q('#ib-image').focus(); return; }
+          const src = I.serialize({ title: q('#ib-title').value, image, caption: q('#ib-caption').value, rows });
+          if (!src) { if (existing) { existing.remove(); prepare(); changed(); } close(); return; }
+          const tpl = document.createElement('template');
+          tpl.innerHTML = opts.renderHtml(`:::infobox\n${src}\n:::`);
+          const node = tpl.content.querySelector('aside.infobox');
+          if (!node) return;
+          if (existing) existing.replaceWith(node);
+          else editorEl.insertBefore(node, editorEl.firstChild); // 프로필 상자는 문서 맨 위(오른쪽)에 둔다
+          close();
+          prepare();
+          changed();
+        });
+      });
+    }
+
     function openImageDialog() {
       saveRange();
       openDialog(`
@@ -839,6 +931,8 @@
     on(document, 'selectionchange', () => { if (inEditor(sel().anchorNode)) { saveRange(); refreshState(); } });
 
     on(editorEl, 'click', (e) => {
+      const box = e.target.closest('aside.infobox');
+      if (box) { e.preventDefault(); openInfoboxDialog(box); return; }
       const sup = e.target.closest('sup.fnm');
       if (sup) { showNotePop(sup, false); return; }
       const a = e.target.closest('a');

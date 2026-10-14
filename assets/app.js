@@ -131,10 +131,46 @@
     return -1;
   }
 
+  /* 프로필 상자를 HTML 로 만든다. 편집기용(editRender)은 원문을 data-ib 에 담아 둔다. */
+  function infoboxHtml(token, parser) {
+    const d = token.data;
+    const img = /^https?:\/\//i.test(d.image) ? d.image : '';
+    const rows = d.rows.map((r, i) => {
+      if (r.type === 'head') return `<tr class="ib-head"><th colspan="2">${esc(r.label)}</th></tr>`;
+      return `<tr><th>${esc(r.label)}</th><td>${parser.parseInline(token.valueTokens[i])}</td></tr>`;
+    });
+    const attrs = editRender ? ` ib-edit" data-ib="${esc(token.body)}" title="클릭해서 프로필 상자 편집` : '';
+    return `<aside class="infobox${attrs}">` +
+      (d.title ? `<div class="ib-title">${esc(d.title)}</div>` : '') +
+      (img ? `<figure class="ib-image"><img src="${esc(img)}" alt="${esc(d.caption || d.title)}" loading="lazy" referrerpolicy="no-referrer">${d.caption ? `<figcaption>${esc(d.caption)}</figcaption>` : ''}</figure>` : '') +
+      (rows.length ? `<table class="ib-table"><tbody>${rows.join('')}</tbody></table>` : '') +
+      '</aside>\n';
+  }
+
   marked.use({
     gfm: true,
     breaks: true,
     extensions: [
+      {
+        name: 'infobox',
+        level: 'block',
+        start: (src) => src.indexOf(':::infobox'),
+        tokenizer(src) {
+          const m = /^:::infobox[ \t]*\n([\s\S]*?)\n:::[ \t]*(?:\n|$)/.exec(src);
+          if (!m) return;
+          const data = WikiInfobox.parse(m[1]);
+          return {
+            type: 'infobox',
+            raw: m[0],
+            body: m[1],
+            data,
+            valueTokens: data.rows.map((r) => (r.type === 'row' ? this.lexer.inlineTokens(r.value) : null)),
+          };
+        },
+        renderer(token) {
+          return infoboxHtml(token, this.parser);
+        },
+      },
       {
         name: 'wikilink',
         level: 'inline',
@@ -192,7 +228,7 @@
     editRender = true;
     try {
       const html = marked.parse(body);
-      return DOMPurify.sanitize(html, { ADD_ATTR: ['data-wiki', 'data-fn'] });
+      return DOMPurify.sanitize(html, { ADD_ATTR: ['data-wiki', 'data-fn', 'data-ib', 'referrerpolicy', 'loading'] });
     } finally {
       editRender = false;
     }
@@ -201,7 +237,7 @@
   function renderMarkdown(body) {
     footnotes = [];
     const html = marked.parse(body);
-    return { html: DOMPurify.sanitize(html, { ADD_ATTR: ['target'] }), footnotes: footnotes.slice() };
+    return { html: DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'referrerpolicy', 'loading'] }), footnotes: footnotes.slice() };
   }
 
   /* 본문(목차 + 내용 + 각주)을 container 에 그린다. 문서 보기와 미리보기가 같이 쓴다. */
@@ -215,18 +251,22 @@
     const contentEl = $('.content', container);
     decorateContent(contentEl);
     buildToc(contentEl, $('.toc-slot', container));
+    // 첫 프로필 상자는 목차보다 앞(문서 맨 위 오른쪽)에 둔다. 그래야 목차·본문이 상자 옆으로 흐른다.
+    const box = contentEl.querySelector('.infobox');
+    if (box) container.insertBefore(box, container.firstChild);
   }
 
   function decorateContent(root) {
     root.querySelectorAll('a.wikilink').forEach((a) => {
       if (!BY_TITLE.has(a.dataset.title)) a.classList.add('missing');
     });
-    root.querySelectorAll('table').forEach((t) => {
+    root.querySelectorAll('table:not(.ib-table)').forEach((t) => {
       const wrap = document.createElement('div');
       wrap.className = 'table-wrap';
       t.replaceWith(wrap);
       wrap.appendChild(t);
     });
+    root.querySelectorAll('img').forEach((img) => { img.referrerPolicy = 'no-referrer'; });
     root.querySelectorAll('a[href]').forEach((a) => {
       if (/^https?:/i.test(a.getAttribute('href')) && !a.classList.contains('external')) {
         a.classList.add('external');
@@ -640,7 +680,7 @@
   }
 
   const plainSnippet = (s) =>
-    (s || '').replace(/[#>*_`|~]|\[\[|\]\]|\[\*/g, ' ').replace(/\s+/g, ' ').trim();
+    (s || '').replace(/:::\w*|(?:title|image|caption):\s*https?:\/\/\S+/gi, ' ').replace(/[#>*_`|~]|\[\[|\]\]|\[\*/g, ' ').replace(/\s+/g, ' ').trim();
 
   async function viewSearch(q) {
     const ok = guard();

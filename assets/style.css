@@ -396,3 +396,51 @@ sup.fn a { font-size: .8em; padding: 0 1px; }
   .cat-row { align-items: flex-start; flex-direction: column; gap: 4px; }
   .cat-row .chips { width: 100%; }
 }
+
+/* ---------- 프로필 상자(인포박스) ---------- */
+.infobox {
+  float: right; width: 300px; margin: 4px 0 16px 24px; border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden; background: var(--paper); font-size: .9rem; line-height: 1.5; box-shadow: 0 1px 3px rgba(0, 0, 0, .06);
+}
+.ib-title { padding: 9px 12px; background: var(--accent); color: #fff; font-size: 1.05rem; font-weight: 800; text-align: center; word-break: break-word; }
+.ib-image { margin: 0; padding: 12px; text-align: center; border-bottom: 1px solid var(--border); }
+.ib-image img { display: block; max-width: 100%; max-height: 360px; margin: 0 auto; border-radius: 6px; }
+.ib-image figcaption { margin-top: 6px; color: var(--muted); font-size: .8rem; }
+.infobox table.ib-table { width: 100%; min-width: 0; margin: 0; border-collapse: collapse; }
+.infobox .ib-table th, .infobox .ib-table td {
+  border: 0; border-top: 1px solid var(--border); padding: 7px 12px; vertical-align: top; text-align: left; overflow-wrap: anywhere;
+}
+.infobox .ib-table tr:first-child th, .infobox .ib-table tr:first-child td { border-top: 0; }
+.infobox .ib-table th { width: 34%; background: var(--th-bg); font-weight: 600; white-space: nowrap; }
+.infobox .ib-table td p { margin: 0; }
+.infobox .ib-table tr.ib-head th {
+  width: auto; text-align: center; white-space: normal;
+  background: color-mix(in srgb, var(--accent) 18%, var(--paper)); color: var(--text);
+}
+.footnotes, .doc-foot { clear: both; }
+.we-editor .infobox.ib-edit { cursor: pointer; outline: 2px solid transparent; outline-offset: 2px; transition: outline-color .15s; }
+.we-editor .infobox.ib-edit:hover { outline-color: var(--accent); }
+.we-editor .infobox.ib-edit::after { content: "✎ 클릭해서 편집"; display: block; padding: 4px; text-align: center; font-size: .75rem; color: var(--muted); border-top: 1px dashed var(--border); }
+@media (max-width: 700px) {
+  .infobox { float: none; width: 100%; margin: 4px 0 16px; }
+}
+
+/* 프로필 상자 입력 창 */
+.we-dialog.wide { width: min(560px, 100%); max-height: calc(100vh - 32px); overflow-y: auto; }
+.we-field select { width: 100%; padding: 9px 12px; border: 1px solid var(--border); border-radius: 8px; font: inherit; background: var(--paper); color: var(--text); }
+.ib-rows { display: flex; flex-direction: column; gap: 6px; }
+.ib-row { display: flex; gap: 6px; align-items: center; }
+.ib-row input { min-width: 0; padding: 7px 10px; border: 1px solid var(--border); border-radius: 8px; font: inherit; font-size: .9rem; background: var(--paper); color: var(--text); }
+.ib-row input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ib-row .ib-l { flex: 0 0 32%; }
+.ib-row .ib-v { flex: 1; }
+.ib-head-row input { flex: 1; font-weight: 700; background: color-mix(in srgb, var(--accent) 12%, var(--paper)); }
+.ib-ctl { display: flex; flex: none; }
+.ib-ctl button { width: 26px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: .9rem; }
+.ib-ctl button:hover { background: var(--th-bg); color: var(--text); }
+.ib-ctl button[data-a="del"]:hover { color: var(--missing); }
+.ib-add { display: flex; gap: 6px; margin-top: 8px; }
+.ib-add button { padding: 6px 12px; border: 1px dashed var(--border); border-radius: 8px; background: transparent; color: var(--accent-dark); font: inherit; font-size: .85rem; cursor: pointer; }
+.ib-add button:hover { background: var(--th-bg); }
+.we-dialog-actions .grow { flex: 1; }
+.we-dialog-actions button.danger { background: transparent; color: var(--missing); }
