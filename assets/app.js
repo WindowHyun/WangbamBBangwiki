@@ -93,11 +93,15 @@
   /* ---------- markdown 확장 ([[링크]], [* 각주]) ---------- */
 
   let footnotes = [];
+  let editRender = false; // true 면 편집기용 HTML(위키 링크·각주를 편집 가능한 표시로)을 만든다
 
   function renderWikiLink(target) {
     const sep = target.indexOf('|');
     const dest = (sep >= 0 ? target.slice(0, sep) : target).trim();
     const labelRaw = sep >= 0 ? target.slice(sep + 1).trim() : '';
+    if (editRender) {
+      return `<a class="wl" data-wiki="${esc(dest)}">${esc(labelRaw || dest)}</a>`;
+    }
     if (/^https?:\/\//i.test(dest)) {
       const label = labelRaw || dest;
       return `<a class="external" href="${esc(dest)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
@@ -153,6 +157,7 @@
           return { type: 'footnote', raw: src.slice(0, end + 1), text: inner, tokens: this.lexer.inlineTokens(inner) };
         },
         renderer(token) {
+          if (editRender) return `<sup class="fnm" data-fn="${esc(token.text)}">&#8203;</sup>`;
           const n = footnotes.length + 1;
           footnotes.push(this.parser.parseInline(token.tokens));
           return `<sup class="fn"><a href="#" id="fnref-${n}" data-fn="${n}" title="${esc(token.text)}">[${n}]</a></sup>`;
@@ -180,6 +185,17 @@
     }
     meta.categories = (meta.categories || '').split(',').map((s) => s.trim()).filter(Boolean);
     return { meta, body: raw };
+  }
+
+  /* 편집기에 넣을 HTML. 위키 링크와 각주는 편집기가 다룰 수 있는 표시로 만든다. */
+  function renderEditHtml(body) {
+    editRender = true;
+    try {
+      const html = marked.parse(body);
+      return DOMPurify.sanitize(html, { ADD_ATTR: ['data-wiki', 'data-fn'] });
+    } finally {
+      editRender = false;
+    }
   }
 
   function renderMarkdown(body) {
@@ -453,101 +469,50 @@
 
   /* ---------- 편집 ---------- */
 
-  let editor = null;
+  let wikiEditor = null;
 
   function destroyEditor() {
-    if (!editor) return;
-    try {
-      if (editor.isFullscreenActive()) EasyMDE.toggleFullScreen(editor);
-      editor.toTextArea();
-    } catch (e) {}
-    editor = null;
+    if (!wikiEditor) return;
+    try { wikiEditor.destroy(); } catch (e) {}
+    wikiEditor = null;
   }
 
-  /* 선택한 글자를 before/after 로 감싼다. 이미 감싸져 있으면 벗긴다. 선택이 없으면 사이에 커서를 둔다. */
-  function wrapSelection(cm, before, after, placeholder = '') {
-    const sel = cm.getSelection();
-    if (sel && sel.startsWith(before) && sel.endsWith(after) && sel.length >= before.length + after.length) {
-      cm.replaceSelection(sel.slice(before.length, sel.length - after.length), 'around');
-    } else if (sel) {
-      cm.replaceSelection(before + sel + after, 'around');
-    } else {
-      const from = cm.getCursor();
-      cm.replaceSelection(before + placeholder + after);
-      const start = { line: from.line, ch: from.ch + before.length };
-      cm.setSelection(start, { line: start.line, ch: start.ch + placeholder.length });
-    }
-    cm.focus();
-  }
-
-  /* 현재 줄(선택한 모든 줄)의 제목 단계를 level 로 바꾼다. 같은 단계면 제목을 해제한다. */
-  function setHeading(cm, level) {
-    const from = cm.getCursor('from').line;
-    const to = cm.getCursor('to').line;
-    const prefix = '#'.repeat(level) + ' ';
-    cm.operation(() => {
-      for (let i = from; i <= to; i++) {
-        const text = cm.getLine(i);
-        const m = /^(#{1,6})\s+/.exec(text);
-        const rest = m ? text.slice(m[0].length) : text;
-        const same = m && m[1].length === level;
-        cm.replaceRange(same ? rest : prefix + rest, { line: i, ch: 0 }, { line: i, ch: text.length });
-      }
+  /* 분류 태그 입력(칩) */
+  function mountChips(box, initial, onChange) {
+    let cats = [...initial];
+    const input = $('input', box);
+    const render = () => {
+      box.querySelectorAll('.chip').forEach((c) => c.remove());
+      cats.forEach((c, i) => {
+        const el = document.createElement('span');
+        el.className = 'chip';
+        el.innerHTML = `${esc(c)}<button type="button" aria-label="${esc(c)} 삭제" data-i="${i}">×</button>`;
+        box.insertBefore(el, input);
+      });
+    };
+    const add = (raw) => {
+      raw.split(',').map((s) => s.trim()).filter(Boolean).forEach((c) => {
+        if (!cats.includes(c) && cats.length < 20) cats.push(c);
+      });
+      input.value = '';
+      render();
+      onChange();
+    };
+    box.addEventListener('click', (e) => {
+      const b = e.target.closest('button[data-i]');
+      if (b) { cats.splice(+b.dataset.i, 1); render(); onChange(); }
+      else input.focus();
     });
-    cm.focus();
-  }
-
-  function editorToolbar() {
-    const btn = (name, text, title, action, extra = {}) => ({ name, text, title, action, className: `tb tb-${name}`, ...extra });
-    const sep = (n) => ({ name: `sep-${n}` });
-    return [
-      btn('bold', 'B', '굵게', EasyMDE.toggleBold),
-      btn('italic', 'I', '기울임', EasyMDE.toggleItalic),
-      btn('strike', 'S', '취소선', EasyMDE.toggleStrikethrough),
-      btn('code', '</>', '코드', EasyMDE.toggleCodeBlock),
-      sep(1),
-      btn('h2', 'H2', '큰 제목 (Ctrl+2)', (e) => setHeading(e.codemirror, 2)),
-      btn('h3', 'H3', '중간 제목 (Ctrl+3)', (e) => setHeading(e.codemirror, 3)),
-      btn('h4', 'H4', '작은 제목 (Ctrl+4)', (e) => setHeading(e.codemirror, 4)),
-      sep(2),
-      btn('ul', '• 목록', '글머리 목록', EasyMDE.toggleUnorderedList),
-      btn('ol', '1. 목록', '번호 목록', EasyMDE.toggleOrderedList),
-      btn('quote', '❝ 인용', '인용문', EasyMDE.toggleBlockquote),
-      btn('table', '표', '표 삽입', EasyMDE.drawTable),
-      btn('hr', '―', '가로줄', EasyMDE.drawHorizontalRule),
-      sep(3),
-      btn('wikilink', '[[문서]]', '문서 링크 (Ctrl+K)', (e) => wrapSelection(e.codemirror, '[[', ']]', '문서 제목')),
-      btn('footnote', '각주', '각주 (Ctrl+Shift+F)', (e) => wrapSelection(e.codemirror, '[* ', ']', '각주 내용')),
-      btn('link', '외부 링크', '외부 링크 (Ctrl+Alt+K)', EasyMDE.drawLink),
-      btn('image', '이미지', '이미지 주소 넣기', EasyMDE.drawImage),
-      sep(4),
-      btn('undo', '↶', '실행 취소 (Ctrl+Z)', EasyMDE.undo),
-      btn('redo', '↷', '다시 실행 (Ctrl+Y)', EasyMDE.redo),
-      sep(5),
-      btn('preview', '미리보기', '미리보기', EasyMDE.togglePreview, { noDisable: true }),
-      btn('side', '나란히 보기', '편집·미리보기 나란히', (e) => {
-        // EasyMDE 는 나란히 보기를 켜면 전체화면도 같이 켠다. 끌 때는 전체화면도 함께 닫는다.
-        const wasOn = e.isSideBySideActive();
-        EasyMDE.toggleSideBySide(e);
-        if (wasOn && e.isFullscreenActive()) EasyMDE.toggleFullScreen(e);
-      }, { noDisable: true, noMobile: true }),
-      btn('fullscreen', '전체화면', '전체화면', EasyMDE.toggleFullScreen, { noDisable: true, noMobile: true }),
-      btn('guide', '? 문법', '문법 도움말 (새 탭)', () => window.open(`#/w/${enc('문법 도움말')}`, '_blank', 'noopener'), { noDisable: true }),
-    ];
-  }
-
-  /* [[문서 링크]] 를 편집창에서도 색으로 구분해 준다. */
-  function markWikiLinks(cm, marks) {
-    marks.forEach((m) => m.clear());
-    marks.length = 0;
-    const text = cm.getValue();
-    const re = /\[\[[^\[\]\n]+?\]\]/g;
-    let m;
-    cm.operation(() => {
-      while ((m = re.exec(text))) {
-        marks.push(cm.markText(cm.posFromIndex(m.index), cm.posFromIndex(m.index + m[0].length), { className: 'cm-wikilink' }));
-      }
+    input.addEventListener('keydown', (e) => {
+      if ((e.key === 'Enter' || e.key === ',') && input.value.trim()) { e.preventDefault(); add(input.value); }
+      else if (e.key === 'Backspace' && !input.value && cats.length) { cats.pop(); render(); onChange(); }
     });
+    input.addEventListener('blur', () => { if (input.value.trim()) add(input.value); });
+    render();
+    return () => {
+      if (input.value.trim()) add(input.value);
+      return cats;
+    };
   }
 
   async function viewEdit(title, params) {
@@ -565,78 +530,60 @@
     }
 
     const baseRev = row ? row.rev : 0;
-    const initial = old ? old.content : row ? row.content : '---\ncategories: \n---\n\n## 개요\n\n';
+    const source = old ? old.content : row ? row.content : '';
+    const { meta, body } = parseDoc(source);
     const defaultSummary = old ? `r${old.rev}(으)로 되돌림` : '';
+    const backHref = row ? docHref(title) : '#/';
 
     show(`
-      <div class="doc-head"><h1>${esc(title)} <small>${row ? `편집 (r${row.rev} 기준)` : '새 문서'}</small></h1>${tabsHtml(title, 'edit')}</div>
+      <div class="edit-head">
+        <div>
+          <h1>${esc(title)}</h1>
+          <span class="badge">${row ? `편집 중 · r${row.rev} 기준` : '새 문서'}</span>
+        </div>
+        <a class="back-link" href="${backHref}">← ${row ? '문서로 돌아가기' : '대문으로'}</a>
+      </div>
       ${old ? `<p class="notice">r${old.rev} 판 내용을 불러왔습니다. 저장하면 이 내용으로 되돌립니다.</p>` : ''}
-      <div class="editor">
-        <textarea id="ed-text" aria-label="문서 내용"></textarea>
-        <div class="editor-fields">
-          <label>닉네임 <input id="ed-author" maxlength="20" placeholder="익명"></label>
-          <label class="grow">편집 요약 <input id="ed-summary" maxlength="200" placeholder="무엇을 고쳤는지 간단히"></label>
-        </div>
-        <p class="muted small">저장하면 편집 기록에 닉네임과 IP 일부(예: 1.2.*.*)가 남습니다.</p>
-        <div id="ed-error" class="error" hidden></div>
-        <div class="editor-actions">
-          <button type="button" class="btn" id="ed-save">저장</button>
-          <a class="btn secondary" href="${row ? docHref(title) : '#/'}">취소</a>
-        </div>
-      </div>`);
-
-    editor = new EasyMDE({
-      element: $('#ed-text'),
-      initialValue: initial,
-      autoDownloadFontAwesome: false,
-      spellChecker: false,
-      nativeSpellcheck: false,
-      status: ['lines', 'words'],
-      minHeight: '50vh',
-      toolbar: editorToolbar(),
-      placeholder: '내용을 입력하세요. 위쪽 버튼이나 단축키로 서식을 넣을 수 있습니다.',
-      shortcuts: {
-        toggleBold: 'Ctrl-B', toggleItalic: 'Ctrl-I', togglePreview: 'Ctrl-P', toggleFullScreen: 'F11',
-        // 아래는 위키 전용 단축키(addKeyMap)와 겹치거나 쓰지 않는 기본값이라 끈다.
-        drawLink: null, toggleSideBySide: null, toggleHeadingSmaller: null, toggleHeadingBigger: null,
-        toggleHeading1: null, toggleHeading2: null, toggleHeading3: null, cleanBlock: null,
-        toggleCodeBlock: null, toggleBlockquote: null, toggleUnorderedList: null, toggleOrderedList: null,
-        drawImage: null, drawTable: null, drawHorizontalRule: null, toggleStrikethrough: null,
-      },
-      previewRender(text) {
-        const box = document.createElement('div');
-        renderBodyInto(box, text);
-        return box.innerHTML;
-      },
-    });
-
-    const cm = editor.codemirror;
-    const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
-    const mod = isMac ? 'Cmd' : 'Ctrl';
-    // addKeyMap 은 키 이름을 정규화하지 않는다. 수식키 순서는 Shift-Cmd/Ctrl-Alt 여야 한다.
-    cm.addKeyMap({
-      [`${mod}-K`]: () => wrapSelection(cm, '[[', ']]', '문서 제목'),
-      [`Shift-${mod}-F`]: () => wrapSelection(cm, '[* ', ']', '각주 내용'),
-      [`${mod}-Alt-K`]: () => EasyMDE.drawLink(editor),
-      [`${mod}-2`]: () => setHeading(cm, 2),
-      [`${mod}-3`]: () => setHeading(cm, 3),
-      [`${mod}-4`]: () => setHeading(cm, 4),
-    });
-
-    const linkMarks = [];
-    let markTimer = 0;
-    const scheduleMarks = () => {
-      clearTimeout(markTimer);
-      markTimer = setTimeout(() => editor && markWikiLinks(cm, linkMarks), 150);
-    };
-    markWikiLinks(cm, linkMarks);
+      <div class="cat-row">
+        <span class="cat-label">분류</span>
+        <div class="chips" id="chips"><input id="chip-input" placeholder="분류 입력 후 Enter" maxlength="30" aria-label="분류 추가"></div>
+      </div>
+      <div id="we-mount"></div>
+      <details class="adv">
+        <summary>고급 설정</summary>
+        <label>넘겨주기 <small class="muted">(이 문서를 열면 다른 문서로 이동)</small>
+          <input id="ed-redirect" maxlength="100" placeholder="이동할 문서 제목" value="${esc(meta.redirect || '')}">
+        </label>
+      </details>
+      <div id="ed-error" class="error" hidden></div>
+      <div class="submit-bar">
+        <input id="ed-author" maxlength="20" placeholder="닉네임 (익명)" aria-label="닉네임">
+        <input id="ed-summary" class="grow" maxlength="200" placeholder="수정 내용을 한 줄로 적어 주세요 (선택)" aria-label="편집 요약">
+        <a class="btn secondary" href="${backHref}">취소</a>
+        <button type="button" class="btn" id="ed-save">저장</button>
+      </div>
+      <p class="muted small submit-note">저장하면 편집 기록에 닉네임과 IP 일부(예: 1.2.*.*)가 남습니다.</p>`);
 
     let dirty = false;
-    cm.on('change', () => { dirty = true; scheduleMarks(); });
+    const markDirty = () => { dirty = true; };
     window.onbeforeunload = () => (dirty ? '저장하지 않은 내용이 있습니다.' : undefined);
 
+    wikiEditor = WikiEditor.create($('#we-mount'), {
+      renderHtml: renderEditHtml,
+      titles: () => INDEX.pages.map((p) => p.title),
+      isMissing: (dest) => {
+        const t = String(dest || '').split('#')[0].trim();
+        return !!t && !/^https?:\/\//i.test(t) && !/^분류:/.test(t) && !BY_TITLE.has(t);
+      },
+      onChange: markDirty,
+    });
+    wikiEditor.setMarkdown(body);
+    dirty = false;
+    const getCats = mountChips($('#chips'), meta.categories, markDirty);
+    $('#ed-redirect').addEventListener('input', markDirty);
     $('#ed-author').value = store.get('wiki-nick');
     $('#ed-summary').value = defaultSummary;
+    if (!row) wikiEditor.focus();
 
     const errBox = $('#ed-error');
     const saveBtn = $('#ed-save');
@@ -645,10 +592,17 @@
       saveBtn.disabled = true;
       saveBtn.textContent = '저장 중…';
       const author = $('#ed-author').value.trim();
+      // 머리말(분류·넘겨주기)은 화면에 따로 두고, 저장할 때만 문서 맨 위에 붙인다.
+      const front = [];
+      const cats = getCats();
+      const redirect = $('#ed-redirect').value.trim();
+      if (cats.length) front.push(`categories: ${cats.join(', ')}`);
+      if (redirect) front.push(`redirect: ${redirect}`);
+      const content = (front.length ? `---\n${front.join('\n')}\n---\n\n` : '') + wikiEditor.getMarkdown();
       try {
         await api.edit({
           p_title: title,
-          p_content: editor.value(),
+          p_content: content,
           p_base_rev: baseRev,
           p_summary: $('#ed-summary').value,
           p_author: author,
@@ -666,6 +620,7 @@
           : '');
         saveBtn.disabled = false;
         saveBtn.textContent = '저장';
+        errBox.scrollIntoView({ block: 'nearest' });
       }
     });
     window.scrollTo(0, 0);
