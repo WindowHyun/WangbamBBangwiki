@@ -2,7 +2,7 @@
   'use strict';
 
   const C = Object.assign(
-    { name: '위키', home: '대문', repo: '', branch: 'main', pagesDir: 'pages' },
+    { name: '위키', home: '대문', repo: '', supabaseUrl: '', supabaseKey: '' },
     window.WIKI_CONFIG
   );
 
@@ -22,11 +22,73 @@
     const d = new Date(iso);
     return isNaN(d) ? '' : d.toLocaleDateString('ko-KR', { month: 'numeric', day: 'numeric' });
   };
+  const store = {
+    get(k) { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
 
   const app = $('#app');
   let INDEX = { pages: [] };
   const BY_TITLE = new Map();
-  const rawCache = new Map();
+
+  /* ---------- Supabase (REST) ---------- */
+
+  const ERRORS = {
+    conflict: '저장하는 사이에 다른 사람이 문서를 수정했습니다.',
+    protected: '보호된 문서라 편집할 수 없습니다.',
+    blocked: '편집이 차단된 IP입니다.',
+    rate_limited: '짧은 시간에 너무 많이 저장했습니다. 잠시 뒤 다시 시도해 주세요.',
+    no_change: '바뀐 내용이 없습니다.',
+    invalid_title: '제목이 올바르지 않습니다. (1~100자, [ ] | # 와 줄바꿈 불가, / 로 시작하거나 끝날 수 없음)',
+    invalid_content: '내용이 비어 있거나 너무 깁니다. (최대 10만 자)',
+  };
+  const errText = (err) =>
+    ERRORS[err.code] || (err instanceof TypeError ? '서버에 연결할 수 없습니다. 잠시 뒤 다시 시도해 주세요.' : err.message || String(err));
+
+  async function sb(path, { method = 'GET', body } = {}) {
+    const res = await fetch(`${C.supabaseUrl}/rest/v1/${path}`, {
+      method,
+      headers: { apikey: C.supabaseKey, 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let j = null;
+      try { j = await res.json(); } catch (e) {}
+      const err = new Error((j && j.message) || res.statusText);
+      err.code = j && j.message;
+      throw err;
+    }
+    return res.status === 204 ? null : res.json();
+  }
+
+  const pgArr = (s) => `{"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"}`;
+
+  const api = {
+    list: () => sb('pages?select=title,categories,redirect_to,updated_at&order=title.asc&limit=5000'),
+    get: async (title) =>
+      (await sb(`pages?title=eq.${enc(title)}&select=title,content,rev,protected,updated_at,categories,redirect_to`))[0] || null,
+    backlinks: (title) => sb(`pages?links=cs.${enc(pgArr(title))}&select=title&order=title.asc&limit=500`),
+    history: (title) =>
+      sb(`revisions?page_title=eq.${enc(title)}&select=rev,summary,author,ip_label,size,created_at&order=rev.desc&limit=200`),
+    revision: async (title, rev) =>
+      (await sb(`revisions?page_title=eq.${enc(title)}&rev=eq.${+rev}&select=rev,content,summary,author,ip_label,size,created_at`))[0] || null,
+    recent: () =>
+      sb('revisions?select=page_title,rev,summary,author,ip_label,size,created_at&order=created_at.desc&limit=100'),
+    search: (q) => sb('rpc/search_pages', { method: 'POST', body: { q } }),
+    edit: (p) => sb('rpc/edit_page', { method: 'POST', body: p }),
+  };
+
+  async function loadIndex() {
+    const rows = await api.list();
+    INDEX.pages = rows.map((r) => ({
+      title: r.title,
+      categories: r.categories || [],
+      redirect: r.redirect_to,
+      updated: r.updated_at,
+    }));
+    BY_TITLE.clear();
+    for (const p of INDEX.pages) BY_TITLE.set(p.title, p);
+  }
 
   /* ---------- markdown 확장 ([[링크]], [* 각주]) ---------- */
 
@@ -126,96 +188,17 @@
     return { html: DOMPurify.sanitize(html, { ADD_ATTR: ['target'] }), footnotes: footnotes.slice() };
   }
 
-  /* ---------- 데이터 로딩 ---------- */
-
-  async function loadIndex() {
-    const res = await fetch('data/index.json', { cache: 'no-cache' });
-    if (!res.ok) throw new Error('data/index.json 을 불러오지 못했습니다.');
-    INDEX = await res.json();
-    BY_TITLE.clear();
-    for (const p of INDEX.pages) BY_TITLE.set(p.title, p);
-  }
-
-  async function fetchDoc(title) {
-    if (rawCache.has(title)) return rawCache.get(title);
-    const path = `${C.pagesDir}/${title.split('/').map(enc).join('/')}.md`;
-    const res = await fetch(path, { cache: 'no-cache' });
-    const raw = res.ok ? await res.text() : null;
-    rawCache.set(title, raw);
-    return raw;
-  }
-
-  /* ---------- GitHub 링크 ---------- */
-
-  const filePath = (title) => `${C.pagesDir}/${title.split('/').map(enc).join('/')}.md`;
-  const ghEdit = (title) => `https://github.com/${C.repo}/edit/${C.branch}/${filePath(title)}`;
-  const ghHistory = (title) => `https://github.com/${C.repo}/commits/${C.branch}/${filePath(title)}`;
-  const ghNew = (title) =>
-    `https://github.com/${C.repo}/new/${C.branch}?filename=${enc(`${C.pagesDir}/${title}.md`)}` +
-    `&value=${enc(`---\ncategories: \n---\n\n## 개요\n\n`)}`;
-
-  /* ---------- 뷰 ---------- */
-
-  function setTitle(t) {
-    document.title = t ? `${t} - ${C.name}` : C.name;
-  }
-
-  function show(html) {
-    app.innerHTML = html;
-  }
-
-  function tabsHtml(title, exists) {
-    const t = [`<a href="#/backlink/${enc(title)}">역링크</a>`];
-    if (C.repo) {
-      t.push(`<a href="${exists ? ghEdit(title) : ghNew(title)}" target="_blank" rel="noopener">${exists ? '편집' : '새 문서 만들기'}</a>`);
-      if (exists) t.push(`<a href="${ghHistory(title)}" target="_blank" rel="noopener">역사</a>`);
-    }
-    return `<nav class="tabs">${t.join('')}</nav>`;
-  }
-
-  async function viewDoc(title, params) {
-    const raw = await fetchDoc(title);
-    setTitle(title);
-
-    if (raw === null) {
-      show(`
-        <div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, false)}</div>
-        <p>이 문서는 아직 존재하지 않습니다.</p>
-        ${C.repo ? `<p><a class="btn" href="${ghNew(title)}" target="_blank" rel="noopener">이 문서 만들기</a></p>` : ''}
-        <p class="muted">GitHub 저장소의 <code>${esc(C.pagesDir)}/${esc(title)}.md</code> 파일로 만들어집니다.</p>
-        <p><a href="#/search?q=${enc(title)}">‘${esc(title)}’(으)로 검색</a></p>`);
-      window.scrollTo(0, 0);
-      return;
-    }
-
-    const { meta, body } = parseDoc(raw);
-    if (meta.redirect && meta.redirect !== title && !params.get('noredirect')) {
-      location.replace(`#/w/${enc(meta.redirect)}?from=${enc(title)}`);
-      return;
-    }
-
+  /* 본문(목차 + 내용 + 각주)을 container 에 그린다. 문서 보기와 미리보기가 같이 쓴다. */
+  function renderBodyInto(container, content) {
+    const { body } = parseDoc(content);
     const { html, footnotes: fns } = renderMarkdown(body);
-    const entry = BY_TITLE.get(title);
-    const from = params.get('from');
-
-    show(`
-      <article class="doc">
-        <div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, true)}</div>
-        ${from ? `<p class="notice"><a href="${docHref(from)}?noredirect=1">${esc(from)}</a> 에서 넘어왔습니다.</p>` : ''}
-        ${meta.categories.length ? `<div class="catbox"><span class="label">분류</span>${meta.categories.map((c) => `<a href="#/category/${enc(c)}">${esc(c)}</a>`).join('')}</div>` : ''}
-        <div id="toc-slot"></div>
-        <div class="content">${html}</div>
-        ${fns.length ? `<div class="footnotes"><ol>${fns.map((f, i) => `<li id="fn-${i + 1}"><a class="back" href="#" data-fnref="${i + 1}">[${i + 1}]</a>${f}</li>`).join('')}</ol></div>` : ''}
-        <div class="doc-foot">${entry && entry.updated ? `이 문서는 ${esc(fmtDate(entry.updated))}에 마지막으로 수정되었습니다.` : ''}</div>
-      </article>`);
-
-    const content = $('.content');
-    decorateContent(content);
-    buildToc(content, $('#toc-slot'));
-
-    const section = params.get('s');
-    if (section) scrollToHeading(section);
-    else window.scrollTo(0, 0);
+    container.innerHTML = `
+      <div class="toc-slot"></div>
+      <div class="content">${html}</div>
+      ${fns.length ? `<div class="footnotes"><ol>${fns.map((f, i) => `<li id="fn-${i + 1}"><a class="back" href="#" data-fnref="${i + 1}">[${i + 1}]</a>${f}</li>`).join('')}</ol></div>` : ''}`;
+    const contentEl = $('.content', container);
+    decorateContent(contentEl);
+    buildToc(contentEl, $('.toc-slot', container));
   }
 
   function decorateContent(root) {
@@ -274,6 +257,294 @@
     setTimeout(() => el.classList.remove('flash'), 1500);
   }
 
+  /* ---------- 공통 뷰 헬퍼 ---------- */
+
+  let routeId = 0;
+  const guard = () => {
+    const id = routeId;
+    return () => id === routeId;
+  };
+
+  function setTitle(t) {
+    document.title = t ? `${t} - ${C.name}` : C.name;
+  }
+
+  function show(html) {
+    app.innerHTML = html;
+  }
+
+  function loading() {
+    show('<p class="loading">불러오는 중…</p>');
+  }
+
+  function tabsHtml(title, active) {
+    const tab = (key, href, label) =>
+      `<a href="${href}"${active === key ? ' class="active"' : ''}>${label}</a>`;
+    return `<nav class="tabs">${[
+      tab('backlink', `#/backlink/${enc(title)}`, '역링크'),
+      tab('edit', `#/edit/${enc(title)}`, '편집'),
+      tab('history', `#/history/${enc(title)}`, '역사'),
+    ].join('')}</nav>`;
+  }
+
+  const who = (author, ip) => `${esc(author)} <span class="ip">(${esc(ip)})</span>`;
+
+  /* ---------- 문서 보기 ---------- */
+
+  async function viewDoc(title, params) {
+    const ok = guard();
+    loading();
+    const row = await api.get(title);
+    if (!ok()) return;
+    setTitle(title);
+
+    if (!row) {
+      show(`
+        <div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, '')}</div>
+        <p>이 문서는 아직 존재하지 않습니다.</p>
+        <p><a class="btn" href="#/edit/${enc(title)}">이 문서 만들기</a></p>
+        <p><a href="#/search?q=${enc(title)}">‘${esc(title)}’(으)로 검색</a></p>`);
+      window.scrollTo(0, 0);
+      return;
+    }
+
+    if (row.redirect_to && row.redirect_to !== title && !params.get('noredirect')) {
+      location.replace(`#/w/${enc(row.redirect_to)}?from=${enc(title)}`);
+      return;
+    }
+
+    const from = params.get('from');
+    const cats = row.categories || [];
+    show(`
+      <article class="doc">
+        <div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, '')}</div>
+        ${row.protected ? '<p class="notice">🔒 보호된 문서입니다. 편집할 수 없습니다.</p>' : ''}
+        ${from ? `<p class="notice"><a href="#/w/${enc(from)}?noredirect=1">${esc(from)}</a> 에서 넘어왔습니다.</p>` : ''}
+        ${cats.length ? `<div class="catbox"><span class="label">분류</span>${cats.map((c) => `<a href="#/category/${enc(c)}">${esc(c)}</a>`).join('')}</div>` : ''}
+        <div id="body"></div>
+        <div class="doc-foot">이 문서는 ${esc(fmtDate(row.updated_at))}에 마지막으로 수정되었습니다. (r${row.rev})</div>
+      </article>`);
+    renderBodyInto($('#body'), row.content);
+
+    const section = params.get('s');
+    if (section) scrollToHeading(section);
+    else window.scrollTo(0, 0);
+  }
+
+  /* 특정 판 보기 */
+  async function viewRev(title, rev) {
+    const ok = guard();
+    loading();
+    const r = await api.revision(title, rev);
+    if (!ok()) return;
+    setTitle(`${title} (r${rev})`);
+    if (!r) {
+      show(`<h1 class="page-title">${esc(title)}</h1><p>r${esc(rev)} 판이 없습니다. <a href="#/history/${enc(title)}">역사로</a></p>`);
+      return;
+    }
+    show(`
+      <article class="doc">
+        <div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, 'history')}</div>
+        <p class="notice">이것은 <b>r${r.rev}</b> 판입니다 (${esc(fmtDate(r.created_at))}, ${who(r.author, r.ip_label)}).
+          <a href="${docHref(title)}">최신 판 보기</a> · <a href="#/edit/${enc(title)}?r=${r.rev}">이 판으로 되돌리기</a> · <a href="#/history/${enc(title)}">역사</a></p>
+        <div id="body"></div>
+      </article>`);
+    renderBodyInto($('#body'), r.content);
+    window.scrollTo(0, 0);
+  }
+
+  /* ---------- 역사 / 비교 ---------- */
+
+  async function viewHistory(title) {
+    const ok = guard();
+    loading();
+    const rows = await api.history(title);
+    if (!ok()) return;
+    setTitle(`${title} 역사`);
+    if (!rows.length) {
+      show(`<h1 class="page-title">${esc(title)} 역사</h1><p>편집 기록이 없습니다. <a href="#/edit/${enc(title)}">문서 만들기</a></p>`);
+      return;
+    }
+    const latest = rows[0].rev;
+    show(`
+      <div class="doc-head"><h1><a href="${docHref(title)}">${esc(title)}</a> <small>역사</small></h1>${tabsHtml(title, 'history')}</div>
+      <table class="simple-table history">
+        <thead><tr><th>판</th><th>시각</th><th>편집자</th><th>크기</th><th>요약</th><th></th></tr></thead>
+        <tbody>${rows.map((r) => `
+          <tr>
+            <td><a href="#/rev/${enc(title)}/${r.rev}">r${r.rev}</a>${r.rev === latest ? ' <span class="tag">최신</span>' : ''}</td>
+            <td class="when">${esc(fmtDate(r.created_at))}</td>
+            <td>${who(r.author, r.ip_label)}</td>
+            <td class="when">${r.size.toLocaleString('ko-KR')}</td>
+            <td>${esc(r.summary)}</td>
+            <td class="when">${[
+              r.rev > 1 ? `<a href="#/diff/${enc(title)}/${r.rev}">비교</a>` : '',
+              r.rev !== latest ? `<a href="#/edit/${enc(title)}?r=${r.rev}">되돌리기</a>` : '',
+            ].filter(Boolean).join(' · ')}</td>
+          </tr>`).join('')}</tbody>
+      </table>`);
+    window.scrollTo(0, 0);
+  }
+
+  function lineDiff(a, b) {
+    const x = a.split('\n');
+    const y = b.split('\n');
+    const n = x.length;
+    const m = y.length;
+    if (n * m > 4000000) return null;
+    const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = x[i] === y[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const ops = [];
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (x[i] === y[j]) { ops.push({ t: ' ', s: x[i] }); i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) ops.push({ t: '-', s: x[i++] });
+      else ops.push({ t: '+', s: y[j++] });
+    }
+    while (i < n) ops.push({ t: '-', s: x[i++] });
+    while (j < m) ops.push({ t: '+', s: y[j++] });
+    return ops;
+  }
+
+  function diffHtml(oldText, newText) {
+    const ops = lineDiff(oldText, newText);
+    if (!ops) return '<p class="muted">문서가 너무 커서 변경 내용을 표시할 수 없습니다.</p>';
+    const CONTEXT = 3;
+    const keep = new Array(ops.length).fill(false);
+    ops.forEach((o, i) => {
+      if (o.t === ' ') return;
+      for (let k = Math.max(0, i - CONTEXT); k <= Math.min(ops.length - 1, i + CONTEXT); k++) keep[k] = true;
+    });
+    if (!keep.some(Boolean)) return '<p class="muted">차이가 없습니다.</p>';
+    const rows = [];
+    let skipped = false;
+    ops.forEach((o, i) => {
+      if (!keep[i]) { skipped = true; return; }
+      if (skipped && rows.length) rows.push('<tr class="diff-gap"><td></td><td>⋯</td></tr>');
+      skipped = false;
+      rows.push(`<tr class="diff-${o.t === '+' ? 'add' : o.t === '-' ? 'del' : 'same'}"><td class="sign">${o.t === ' ' ? '' : o.t}</td><td><pre>${esc(o.s) || ' '}</pre></td></tr>`);
+    });
+    return `<table class="diff"><tbody>${rows.join('')}</tbody></table>`;
+  }
+
+  async function viewDiff(title, rev) {
+    const ok = guard();
+    loading();
+    rev = +rev;
+    const [cur, prev] = await Promise.all([api.revision(title, rev), api.revision(title, rev - 1)]);
+    if (!ok()) return;
+    setTitle(`${title} 비교`);
+    if (!cur) {
+      show(`<h1 class="page-title">${esc(title)}</h1><p>r${rev} 판이 없습니다. <a href="#/history/${enc(title)}">역사로</a></p>`);
+      return;
+    }
+    show(`
+      <div class="doc-head"><h1><a href="${docHref(title)}">${esc(title)}</a> <small>r${prev ? prev.rev : 0} → r${cur.rev} 비교</small></h1>${tabsHtml(title, 'history')}</div>
+      <p class="muted">${esc(fmtDate(cur.created_at))} · ${who(cur.author, cur.ip_label)}${cur.summary ? ` · ${esc(cur.summary)}` : ''}</p>
+      ${diffHtml(prev ? prev.content : '', cur.content)}
+      <p><a href="#/history/${enc(title)}">← 역사로</a></p>`);
+    window.scrollTo(0, 0);
+  }
+
+  /* ---------- 편집 ---------- */
+
+  async function viewEdit(title, params) {
+    const ok = guard();
+    loading();
+    const row = await api.get(title);
+    const revParam = params.get('r');
+    const old = row && revParam ? await api.revision(title, revParam) : null;
+    if (!ok()) return;
+    setTitle(`${title} 편집`);
+
+    if (row && row.protected) {
+      show(`<div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, 'edit')}</div><p class="notice">🔒 보호된 문서라 편집할 수 없습니다.</p>`);
+      return;
+    }
+
+    const baseRev = row ? row.rev : 0;
+    const initial = old ? old.content : row ? row.content : '---\ncategories: \n---\n\n## 개요\n\n';
+    const defaultSummary = old ? `r${old.rev}(으)로 되돌림` : '';
+
+    show(`
+      <div class="doc-head"><h1>${esc(title)} <small>${row ? `편집 (r${row.rev} 기준)` : '새 문서'}</small></h1>${tabsHtml(title, 'edit')}</div>
+      ${old ? `<p class="notice">r${old.rev} 판 내용을 불러왔습니다. 저장하면 이 내용으로 되돌립니다.</p>` : ''}
+      <div class="editor">
+        <div class="editor-tabs">
+          <button type="button" class="active" data-pane="write">편집</button>
+          <button type="button" data-pane="preview">미리보기</button>
+          <a class="help" href="#/w/${enc('문법 도움말')}" target="_blank" rel="noopener">문법 도움말 ↗</a>
+        </div>
+        <textarea id="ed-text" spellcheck="false" aria-label="문서 내용"></textarea>
+        <div id="ed-preview" class="preview" hidden></div>
+        <div class="editor-fields">
+          <label>닉네임 <input id="ed-author" maxlength="20" placeholder="익명"></label>
+          <label class="grow">편집 요약 <input id="ed-summary" maxlength="200" placeholder="무엇을 고쳤는지 간단히"></label>
+        </div>
+        <p class="muted small">저장하면 편집 기록에 닉네임과 IP 일부(예: 1.2.*.*)가 남습니다.</p>
+        <div id="ed-error" class="error" hidden></div>
+        <div class="editor-actions">
+          <button type="button" class="btn" id="ed-save">저장</button>
+          <a class="btn secondary" href="${row ? docHref(title) : '#/'}">취소</a>
+        </div>
+      </div>`);
+
+    const ta = $('#ed-text');
+    ta.value = initial;
+    $('#ed-author').value = store.get('wiki-nick');
+    $('#ed-summary').value = defaultSummary;
+    let dirty = false;
+    ta.addEventListener('input', () => { dirty = true; });
+    window.onbeforeunload = () => (dirty ? '저장하지 않은 내용이 있습니다.' : undefined);
+
+    document.querySelectorAll('.editor-tabs button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.editor-tabs button').forEach((b) => b.classList.toggle('active', b === btn));
+        const preview = btn.dataset.pane === 'preview';
+        ta.hidden = preview;
+        $('#ed-preview').hidden = !preview;
+        if (preview) renderBodyInto($('#ed-preview'), ta.value);
+      });
+    });
+
+    const errBox = $('#ed-error');
+    const saveBtn = $('#ed-save');
+    saveBtn.addEventListener('click', async () => {
+      errBox.hidden = true;
+      saveBtn.disabled = true;
+      saveBtn.textContent = '저장 중…';
+      const author = $('#ed-author').value.trim();
+      try {
+        await api.edit({
+          p_title: title,
+          p_content: ta.value,
+          p_base_rev: baseRev,
+          p_summary: $('#ed-summary').value,
+          p_author: author,
+        });
+        store.set('wiki-nick', author);
+        dirty = false;
+        window.onbeforeunload = null;
+        await loadIndex().catch(() => {});
+        renderSide();
+        location.hash = docHref(title);
+      } catch (err) {
+        errBox.hidden = false;
+        errBox.innerHTML = esc(errText(err)) + (err.code === 'conflict'
+          ? ` 작성한 내용을 복사해 둔 뒤 <a href="${docHref(title)}" target="_blank" rel="noopener">최신 문서</a>를 확인하고 다시 편집해 주세요.`
+          : '');
+        saveBtn.disabled = false;
+        saveBtn.textContent = '저장';
+      }
+    });
+    window.scrollTo(0, 0);
+  }
+
   /* ---------- 검색 ---------- */
 
   const reEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -287,72 +558,59 @@
       .join('');
   }
 
-  function search(q) {
-    const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-    if (!terms.length) return [];
-    const out = [];
-    for (const p of INDEX.pages) {
-      const tl = p.title.toLowerCase();
-      const text = (p.text || '').toLowerCase();
-      const cats = (p.categories || []).join(' ').toLowerCase();
-      let score = 0;
-      let ok = true;
-      for (const t of terms) {
-        if (tl === t) score += 100;
-        else if (tl.startsWith(t)) score += 60;
-        else if (tl.includes(t)) score += 40;
-        else if (cats.includes(t)) score += 20;
-        else if (text.includes(t)) score += 5;
-        else { ok = false; break; }
-      }
-      if (ok) out.push({ p, score });
-    }
-    out.sort((a, b) => b.score - a.score || a.p.title.localeCompare(b.p.title, 'ko'));
-    return out.map((o) => o.p);
-  }
+  const plainSnippet = (s) =>
+    (s || '').replace(/[#>*_`|~]|\[\[|\]\]|\[\*/g, ' ').replace(/\s+/g, ' ').trim();
 
-  function snippet(p, terms) {
-    const text = p.text || p.summary || '';
-    const lower = text.toLowerCase();
-    let pos = -1;
-    for (const t of terms) {
-      const i = lower.indexOf(t);
-      if (i >= 0 && (pos < 0 || i < pos)) pos = i;
-    }
-    const start = Math.max(0, pos < 0 ? 0 : pos - 30);
-    const part = text.slice(start, start + 140);
-    return (start > 0 ? '…' : '') + highlight(part, terms) + (start + 140 < text.length ? '…' : '');
-  }
-
-  function viewSearch(q) {
+  async function viewSearch(q) {
+    const ok = guard();
     setTitle(q ? `검색: ${q}` : '검색');
     const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
-    const results = search(q);
+    const form = `<form class="big-search" id="big-search"><input name="q" value="${esc(q)}" placeholder="검색어" autofocus><button class="btn" type="submit">검색</button></form>`;
+    show(`<h1 class="page-title">검색</h1>${form}${q ? '<p class="loading">검색 중…</p>' : ''}`);
+    bindBigSearch();
+    if (!q) return;
+    const results = await api.search(q);
+    if (!ok()) return;
     const exact = BY_TITLE.get(q.trim());
     show(`
-      <h1 class="page-title">검색</h1>
-      <form class="big-search" id="big-search"><input name="q" value="${esc(q)}" placeholder="검색어" autofocus><button class="btn" type="submit">검색</button></form>
-      ${q ? `${exact ? `<p class="notice"><a href="${docHref(exact.title)}">${esc(exact.title)}</a> 문서로 바로 가기</p>` : ''}
+      <h1 class="page-title">검색</h1>${form}
+      ${exact ? `<p class="notice"><a href="${docHref(exact.title)}">${esc(exact.title)}</a> 문서로 바로 가기</p>` : ''}
       <p class="muted">‘${esc(q)}’ 검색 결과 ${results.length}건</p>
       ${results.length ? `<ul class="result-list">${results.map((p) => `
         <li><div class="r-title"><a href="${docHref(p.title)}">${highlight(p.title, terms)}</a></div>
-        <div class="r-snip">${snippet(p, terms)}</div>
+        <div class="r-snip">${highlight(plainSnippet(p.snippet), terms)}</div>
         ${p.categories && p.categories.length ? `<div class="r-meta">분류: ${p.categories.map(esc).join(', ')}</div>` : ''}</li>`).join('')}</ul>`
-        : `<p>일치하는 문서가 없습니다.</p>${C.repo ? `<p><a class="btn" href="${ghNew(q.trim())}" target="_blank" rel="noopener">‘${esc(q.trim())}’ 문서 만들기</a></p>` : ''}`}` : ''}`);
-    $('#big-search').addEventListener('submit', (e) => {
-      e.preventDefault();
-      location.hash = `#/search?q=${enc(new FormData(e.target).get('q'))}`;
-    });
+        : `<p>일치하는 문서가 없습니다.</p><p><a class="btn" href="#/edit/${enc(q.trim())}">‘${esc(q.trim())}’ 문서 만들기</a></p>`}`);
+    bindBigSearch();
     window.scrollTo(0, 0);
   }
 
-  function viewRecent() {
+  function bindBigSearch() {
+    const f = $('#big-search');
+    if (!f) return;
+    f.addEventListener('submit', (e) => {
+      e.preventDefault();
+      location.hash = `#/search?q=${enc(new FormData(e.target).get('q'))}`;
+    });
+  }
+
+  /* ---------- 목록 뷰 ---------- */
+
+  async function viewRecent() {
+    const ok = guard();
+    loading();
+    const rows = await api.recent();
+    if (!ok()) return;
     setTitle('최근 변경');
-    const pages = [...INDEX.pages].filter((p) => !p.redirect).sort((a, b) => (b.updated || '').localeCompare(a.updated || ''));
     show(`
       <h1 class="page-title">최근 변경</h1>
-      <table class="simple-table"><tbody>${pages.map((p) => `
-        <tr><td><a href="${docHref(p.title)}">${esc(p.title)}</a></td><td class="when">${esc(fmtDate(p.updated))}</td></tr>`).join('')}</tbody></table>`);
+      <table class="simple-table"><tbody>${rows.map((r) => `
+        <tr>
+          <td><a href="${docHref(r.page_title)}">${esc(r.page_title)}</a> <a class="muted" href="#/rev/${enc(r.page_title)}/${r.rev}">r${r.rev}</a></td>
+          <td>${who(r.author, r.ip_label)}</td>
+          <td class="summary">${esc(r.summary)}</td>
+          <td class="when">${esc(fmtDate(r.created_at))}</td>
+        </tr>`).join('')}</tbody></table>`);
     window.scrollTo(0, 0);
   }
 
@@ -374,18 +632,21 @@
 
   function viewCategory(name) {
     setTitle(`분류:${name}`);
-    const pages = INDEX.pages.filter((p) => (p.categories || []).includes(name)).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
+    const pages = INDEX.pages.filter((p) => p.categories.includes(name)).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
     show(`
       <h1 class="page-title">분류: ${esc(name)}</h1>
       ${pages.length ? `<ul class="alpha-list">${pages.map((p) => `<li><a href="${docHref(p.title)}">${esc(p.title)}</a></li>`).join('')}</ul>` : '<p>이 분류에 속한 문서가 없습니다.</p>'}`);
     window.scrollTo(0, 0);
   }
 
-  function viewBacklinks(title) {
+  async function viewBacklinks(title) {
+    const ok = guard();
+    loading();
+    const pages = await api.backlinks(title);
+    if (!ok()) return;
     setTitle(`${title} 역링크`);
-    const pages = INDEX.pages.filter((p) => (p.links || []).includes(title)).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
     show(`
-      <h1 class="page-title"><a href="${docHref(title)}">${esc(title)}</a> 역링크</h1>
+      <div class="doc-head"><h1><a href="${docHref(title)}">${esc(title)}</a> <small>역링크</small></h1>${tabsHtml(title, 'backlink')}</div>
       ${pages.length ? `<ul class="alpha-list">${pages.map((p) => `<li><a href="${docHref(p.title)}">${esc(p.title)}</a></li>`).join('')}</ul>` : '<p>이 문서를 가리키는 문서가 없습니다.</p>'}`);
     window.scrollTo(0, 0);
   }
@@ -405,29 +666,35 @@
   /* ---------- 라우터 ---------- */
 
   async function route() {
+    routeId++;
+    window.onbeforeunload = null;
     hideSuggest();
     const raw = location.hash.replace(/^#/, '') || '/';
     const qi = raw.indexOf('?');
     const pathPart = qi >= 0 ? raw.slice(0, qi) : raw;
     const params = new URLSearchParams(qi >= 0 ? raw.slice(qi + 1) : '');
-    const [, kind = '', arg = ''] = pathPart.split('/');
+    const [, kind = '', arg = '', arg2 = ''] = pathPart.split('/');
     const name = safeDecode(arg);
 
     try {
       switch (kind) {
         case '': return await viewDoc(C.home, params);
         case 'w': return await viewDoc(name, params);
-        case 'search': return viewSearch(params.get('q') || '');
-        case 'recent': return viewRecent();
+        case 'edit': return await viewEdit(name, params);
+        case 'history': return await viewHistory(name);
+        case 'rev': return await viewRev(name, arg2);
+        case 'diff': return await viewDiff(name, arg2);
+        case 'search': return await viewSearch(params.get('q') || '');
+        case 'recent': return await viewRecent();
         case 'all': return viewAll();
         case 'category': return viewCategory(name);
-        case 'backlink': return viewBacklinks(name);
+        case 'backlink': return await viewBacklinks(name);
         case 'random': return viewRandom();
         default: return viewNotFound();
       }
     } catch (err) {
       console.error(err);
-      show(`<h1 class="page-title">오류</h1><p>${esc(err.message || err)}</p>`);
+      show(`<h1 class="page-title">오류</h1><p>${esc(errText(err))}</p>`);
     }
   }
 
@@ -510,7 +777,7 @@
       (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     const next = cur === 'dark' ? 'light' : 'dark';
     root.setAttribute('data-theme', next);
-    try { localStorage.setItem('wiki-theme', next); } catch (e) {}
+    store.set('wiki-theme', next);
   });
 
   /* 문서 내 클릭 처리 (목차, 각주 이동) */
@@ -539,8 +806,8 @@
     try {
       await loadIndex();
     } catch (err) {
-      show(`<h1 class="page-title">오류</h1><p>${esc(err.message)}</p>
-        <p class="muted">처음 설치했다면 <code>node scripts/build-index.mjs</code> 를 실행해 <code>data/index.json</code> 을 만들어 주세요.</p>`);
+      show(`<h1 class="page-title">오류</h1><p>${esc(errText(err))}</p>
+        <p class="muted"><code>assets/config.js</code> 의 Supabase 주소와 키, 그리고 <code>supabase/migrations</code> 적용 여부를 확인해 주세요.</p>`);
       return;
     }
     renderChrome();
