@@ -309,7 +309,7 @@ sup.fn a { font-size: .8em; padding: 0 1px; }
 .we-toolbar.disabled .we-btn { opacity: .35; pointer-events: none; }
 .we-menu { position: relative; flex: none; }
 .we-menu-list {
-  position: absolute; top: calc(100% + 4px); left: 0; min-width: 150px; padding: 4px; z-index: 20;
+  position: fixed; min-width: 150px; padding: 4px; z-index: 60;
   background: var(--paper); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .16);
 }
 .we-menu-list[hidden] { display: none; }

@@ -485,6 +485,15 @@
       toolbar.querySelectorAll('.we-menu-list').forEach((m) => { m.hidden = true; });
     }
 
+    /* 툴바는 모바일에서 가로로 스크롤되어 안쪽 요소가 잘리므로, 메뉴는 화면 기준(fixed)으로 버튼 아래에 띄운다. */
+    let menuOpenedAt = 0;
+    function placeMenu(btn, list) {
+      menuOpenedAt = performance.now();
+      const r = btn.getBoundingClientRect();
+      list.style.top = `${r.bottom + 4}px`;
+      list.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - list.offsetWidth - 8))}px`;
+    }
+
     on(toolbar, 'click', (e) => {
       const btn = e.target.closest('button');
       if (!btn || btn.disabled) return;
@@ -492,7 +501,10 @@
         const list = toolbar.querySelector(`.we-menu-list[data-for="${btn.dataset.menu}"]`);
         const open = list.hidden;
         closeMenus();
-        list.hidden = !open;
+        if (open) {
+          list.hidden = false;
+          placeMenu(btn, list);
+        }
         return;
       }
       if (btn.dataset.block) { closeMenus(); btn.dataset.block === 'p' ? exec('formatBlock', 'p') : setBlock(btn.dataset.block); return; }
@@ -512,6 +524,13 @@
       if (btn.dataset.cmd === 'redo') exec('redo');
     });
     on(document, 'click', (e) => { if (!e.target.closest('.we-menu')) closeMenus(); });
+    // 화면이 움직이면 버튼과 메뉴 위치가 어긋나므로 닫는다
+    // (버튼이 화면 안으로 자동 스크롤되며 생기는, 메뉴를 연 직후의 스크롤은 무시한다)
+    const closeOnScroll = () => { if (performance.now() - menuOpenedAt > 400) closeMenus(); };
+    on(window, 'scroll', closeOnScroll, { passive: true });
+    on(window, 'resize', closeMenus);
+    on(toolbar, 'scroll', closeOnScroll, { passive: true });
+    on(document, 'keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
 
     /* --- 모드 전환 (편집기 ↔ 마크다운) --- */
     function setMode(next) {
