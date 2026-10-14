@@ -227,20 +227,7 @@ sup.fn a { font-size: .8em; padding: 0 1px; }
 .doc-head h1 a { color: inherit; }
 
 /* editor */
-.editor-tabs { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
-.editor-tabs button {
-  background: transparent; border: 1px solid transparent; border-bottom: 0; border-radius: 6px 6px 0 0;
-  padding: 6px 14px; cursor: pointer; font: inherit; color: var(--muted);
-}
-.editor-tabs button.active { background: var(--paper); border-color: var(--border); color: var(--text); font-weight: 700; margin-bottom: -1px; }
-.editor-tabs .help { margin-left: auto; font-size: .82rem; }
-#ed-text {
-  width: 100%; min-height: 55vh; resize: vertical; padding: 12px; line-height: 1.6;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92rem;
-  background: var(--paper); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
-}
-#ed-text:focus, .editor-fields input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-.preview { min-height: 55vh; padding: 4px 12px 12px; border: 1px dashed var(--border); border-radius: 6px; }
+.editor-fields input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .editor-fields { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
 .editor-fields label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--muted); }
 .editor-fields label.grow { flex: 1 1 260px; }
@@ -270,3 +257,56 @@ sup.fn a { font-size: .8em; padding: 0 1px; }
 .diff-add { background: rgba(46, 160, 67, .18); }
 .diff-del { background: rgba(248, 81, 73, .18); }
 .diff-gap td { color: var(--muted); text-align: center; background: var(--box-bg); }
+
+/* ---------- EasyMDE (편집기) ---------- */
+.EasyMDEContainer .editor-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px;
+  background: var(--box-bg); border: 1px solid var(--border); border-bottom: 0;
+  border-radius: 6px 6px 0 0; padding: 4px 6px; opacity: 1;
+}
+.EasyMDEContainer .editor-toolbar::before, .EasyMDEContainer .editor-toolbar::after { display: none; }
+.EasyMDEContainer .editor-toolbar button {
+  float: none; width: auto; min-width: 30px; height: 30px; padding: 0 8px; margin: 0;
+  border: 1px solid transparent; border-radius: 5px; background: transparent;
+  color: var(--text); font: inherit; font-size: .82rem; white-space: nowrap; cursor: pointer;
+}
+.EasyMDEContainer .editor-toolbar button:hover { background: var(--th-bg); border-color: var(--border); }
+.EasyMDEContainer .editor-toolbar button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.EasyMDEContainer .editor-toolbar button.tb-bold { font-weight: 800; }
+.EasyMDEContainer .editor-toolbar button.tb-italic { font-style: italic; font-family: Georgia, serif; }
+.EasyMDEContainer .editor-toolbar button.tb-strike { text-decoration: line-through; }
+.EasyMDEContainer .editor-toolbar button.tb-wikilink, .EasyMDEContainer .editor-toolbar button.tb-footnote { color: var(--link); }
+.EasyMDEContainer .editor-toolbar i.separator, .EasyMDEContainer .editor-toolbar .sep-1, .EasyMDEContainer .editor-toolbar [class^="sep-"] { display: none; }
+.EasyMDEContainer .editor-toolbar.disabled-for-preview button:not(.no-disable) { opacity: .4; pointer-events: none; }
+.EasyMDEContainer .editor-toolbar.fullscreen { background: var(--box-bg); }
+.EasyMDEContainer .CodeMirror {
+  background: var(--paper); color: var(--text); border: 1px solid var(--border);
+  border-radius: 0 0 0 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92rem;
+}
+.EasyMDEContainer .CodeMirror-cursor { border-left-color: var(--text); }
+.EasyMDEContainer .CodeMirror-focused { outline: 2px solid var(--accent); outline-offset: -1px; }
+.EasyMDEContainer .CodeMirror-selected { background: rgba(0, 164, 149, .25) !important; }
+.EasyMDEContainer .CodeMirror .CodeMirror-placeholder { color: var(--muted); }
+.EasyMDEContainer .cm-header, .EasyMDEContainer .cm-strong { color: var(--text); }
+.EasyMDEContainer .cm-header { color: var(--accent-dark); }
+.EasyMDEContainer .cm-link, .EasyMDEContainer .cm-url, .EasyMDEContainer .cm-wikilink { color: var(--link); }
+.EasyMDEContainer .cm-quote { color: var(--muted); }
+.EasyMDEContainer .cm-comment { background: var(--code-bg); color: var(--text); }
+.EasyMDEContainer .editor-preview, .EasyMDEContainer .editor-preview-side {
+  background: var(--paper); color: var(--text); border: 1px solid var(--border); padding: 4px 16px 16px;
+}
+.EasyMDEContainer .editor-preview-side { border-left: 0; }
+.EasyMDEContainer .editor-statusbar {
+  color: var(--muted); background: var(--box-bg); border: 1px solid var(--border); border-top: 0;
+  border-radius: 0 0 6px 6px; padding: 4px 10px; font-size: .78rem;
+}
+.EasyMDEContainer .editor-statusbar span { margin-left: 14px; }
+.EasyMDEContainer .CodeMirror-fullscreen, .EasyMDEContainer .editor-preview-side.editor-preview-active-side { z-index: 30; }
+.editor-toolbar.fullscreen, .CodeMirror-fullscreen, .editor-preview-side { z-index: 30; }
+@media (max-width: 700px) {
+  .EasyMDEContainer .editor-toolbar button { min-width: 36px; height: 36px; }
+}
+/* 편집창 안의 제목(##)·머리말이 커 보이지 않게 글자 크기를 본문과 맞춘다 */
+.EasyMDEContainer .CodeMirror .cm-header, .EasyMDEContainer .CodeMirror .cm-header-1, .EasyMDEContainer .CodeMirror .cm-header-2,
+.EasyMDEContainer .CodeMirror .cm-header-3, .EasyMDEContainer .CodeMirror .cm-header-4, .EasyMDEContainer .CodeMirror .cm-header-5,
+.EasyMDEContainer .CodeMirror .cm-header-6 { font-size: 1em; line-height: inherit; font-weight: 700; }
