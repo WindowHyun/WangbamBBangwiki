@@ -121,7 +121,7 @@
           <button class="btn" type="submit">입장</button>
         </form>
         <p class="gate-err" id="gate-err" role="alert" ${message ? '' : 'hidden'}>${esc(message || '')}</p>
-        <p class="muted small">친구에게 받은 초대 링크를 열면 이 기기가 등록되어 다음부터는 바로 들어와요.<br>초대 링크는 한 번만 쓸 수 있어서, 폰·PC 기기마다 따로 받아야 해요.</p>
+        <p class="muted small">단톡방에 올라온 접속 코드를 입력하거나, 코드가 들어 있는 링크를 열면 돼요.<br>한 번 들어오면 이 기기에서는 계속 들어와져요. 폰·PC 마다 한 번씩만 하면 돼요.</p>
       </div>`);
     const form = $('#gate-form');
     $('#gate-code').focus();
