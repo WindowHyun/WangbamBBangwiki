@@ -33,7 +33,12 @@
 
   /* ---------- Supabase (REST) ---------- */
 
+  /* 접속 코드(친구 전용): 이 기기에 저장해 두고 모든 요청 헤더에 실어 보낸다 */
+  const normCode = (c) => String(c || '').trim().toLowerCase().replace(/[\s\-_]+/g, '');
+  const getCode = () => store.get('wiki-code');
+
   const ERRORS = {
+    locked: '접속 코드가 맞지 않거나 바뀌었어요. 코드를 다시 입력해 주세요.',
     conflict: '저장하는 사이에 다른 사람이 문서를 수정했습니다.',
     protected: '보호된 문서라 편집할 수 없습니다.',
     blocked: '편집이 차단된 IP입니다.',
@@ -59,7 +64,7 @@
   async function sb(path, { method = 'GET', body } = {}) {
     const res = await fetch(`${C.supabaseUrl}/rest/v1/${path}`, {
       method,
-      headers: { apikey: C.supabaseKey, 'Content-Type': 'application/json' },
+      headers: { apikey: C.supabaseKey, 'Content-Type': 'application/json', ...(getCode() ? { 'x-wiki-code': getCode() } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (method === 'GET') {
@@ -92,6 +97,62 @@
     search: (q) => sb('rpc/search_pages', { method: 'POST', body: { q } }),
     edit: (p) => sb('rpc/edit_page', { method: 'POST', body: p }),
   };
+
+  /* 코드가 맞는지 서버에 물어본다. 연결 문제 등은 코드 문제가 아니므로 통과시킨다. */
+  async function checkAccess() {
+    try {
+      return (await sb('rpc/check_access', { method: 'POST', body: {} })) !== false;
+    } catch (err) {
+      return true;
+    }
+  }
+
+  /* 코드가 맞지 않을 때 보여 주는 입장 화면 */
+  function showGate(message) {
+    document.body.classList.add('locked');
+    setTitle('친구 전용');
+    show(`
+      <div class="gate">
+        <div class="gate-icon" aria-hidden="true">🔒</div>
+        <h1>친구 전용 위키</h1>
+        <p>접속 코드를 입력하면 들어올 수 있어요.</p>
+        <form id="gate-form" autocomplete="off">
+          <input id="gate-code" type="text" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="접속 코드" aria-label="접속 코드" value="" maxlength="80">
+          <button class="btn" type="submit">입장</button>
+        </form>
+        <p class="gate-err" id="gate-err" role="alert" ${message ? '' : 'hidden'}>${esc(message || '')}</p>
+        <p class="muted small">친구에게 받은 초대 링크를 누르면 코드가 자동으로 입력돼요.</p>
+      </div>`);
+    const form = $('#gate-form');
+    $('#gate-code').focus();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = normCode($('#gate-code').value);
+      const err = $('#gate-err');
+      if (!code) { $('#gate-code').focus(); return; }
+      store.set('wiki-code', code);
+      form.querySelector('button').disabled = true;
+      if (await checkAccess()) {
+        location.hash = '#/';
+        location.reload();
+      } else {
+        store.set('wiki-code', '');
+        form.querySelector('button').disabled = false;
+        err.hidden = false;
+        err.textContent = '코드가 맞지 않아요. 다시 확인해 주세요.';
+        $('#gate-code').select();
+      }
+    });
+  }
+
+  /* 초대 링크(#/join/코드): 코드를 저장하고 주소에서는 지운다 */
+  function takeJoinCode() {
+    const m = /^#\/join\/(.+)$/.exec(location.hash);
+    if (!m) return false;
+    store.set('wiki-code', normCode(safeDecode(m[1])));
+    history.replaceState(null, '', `${location.pathname}${location.search}#/`);
+    return true;
+  }
 
   async function loadIndex() {
     const rows = await api.list();
@@ -379,6 +440,8 @@
     setTitle(title);
 
     if (!row) {
+      if (!(await checkAccess())) { if (ok()) showGate(getCode() ? '저장된 코드가 맞지 않아요. 새 코드를 입력해 주세요.' : ''); return; }
+      if (!ok()) return;
       show(`
         <div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, '')}</div>
         <p>이 문서는 아직 존재하지 않습니다.</p>
@@ -584,6 +647,7 @@
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${C.supabaseUrl}/storage/v1/object/${IMG_BUCKET}/${path}`);
       xhr.setRequestHeader('apikey', C.supabaseKey);
+      if (getCode()) xhr.setRequestHeader('x-wiki-code', getCode());
       xhr.setRequestHeader('Content-Type', blob.type);
       xhr.setRequestHeader('x-upsert', 'false');
       xhr.setRequestHeader('cache-control', 'max-age=31536000');
@@ -654,6 +718,8 @@
     const row = await api.get(title);
     const revParam = params.get('r');
     const old = row && revParam ? await api.revision(title, revParam) : null;
+    if (!ok()) return;
+    if (!row && !(await checkAccess())) { if (ok()) showGate(getCode() ? '저장된 코드가 맞지 않아요. 새 코드를 입력해 주세요.' : ''); return; }
     if (!ok()) return;
     setTitle(`${title} 편집`);
 
@@ -754,7 +820,9 @@
         location.hash = docHref(title);
       } catch (err) {
         errBox.hidden = false;
-        errBox.innerHTML = esc(errText(err)) + (err.code === 'conflict'
+        errBox.innerHTML = esc(errText(err)) + (err.code === 'locked'
+          ? ' 작성한 내용은 그대로 두고 <a href="#/gate" target="_blank" rel="noopener">새 탭에서 코드를 입력</a>한 뒤 다시 저장해 주세요.'
+          : err.code === 'conflict'
           ? ` 작성한 내용을 복사해 둔 뒤 <a href="${docHref(title)}" target="_blank" rel="noopener">최신 문서</a>를 확인하고 다시 편집해 주세요.`
           : '');
         saveBtn.disabled = false;
@@ -905,6 +973,7 @@
         case 'history': return await viewHistory(name);
         case 'rev': return await viewRev(name, arg2);
         case 'diff': return await viewDiff(name, arg2);
+        case 'gate': return showGate('');
         case 'search': return await viewSearch(params.get('q') || '');
         case 'recent': return await viewRecent();
         case 'all': return viewAll();
@@ -935,7 +1004,19 @@
     $('#brand').textContent = C.name;
     $('#footer').innerHTML = `${esc(C.name)} · 문서 ${INDEX.pages.length}개` +
       (C.repo ? ` · <a href="https://github.com/${esc(C.repo)}" target="_blank" rel="noopener">GitHub</a>` : '') +
-      (installPrompt ? ' · <a href="#" id="install-app">앱으로 설치</a>' : '');
+      (installPrompt ? ' · <a href="#" id="install-app">앱으로 설치</a>' : '') +
+      (getCode() ? ' · <a href="#" id="forget-code" title="이 기기에 저장된 접속 코드와 저장된 문서를 지워요">접속 코드 지우기</a>' : '');
+    const forget = $('#forget-code');
+    if (forget) {
+      forget.addEventListener('click', async (e) => {
+        e.preventDefault();
+        if (!confirm('이 기기에 저장된 접속 코드와 저장된 문서를 지울까요? 다시 들어오려면 코드가 필요해요.')) return;
+        store.set('wiki-code', '');
+        try { for (const k of await caches.keys()) if (k.startsWith('wiki-data-')) await caches.delete(k); } catch (err) {}
+        location.hash = '#/';
+        location.reload();
+      });
+    }
     const inst = $('#install-app');
     if (inst) {
       inst.addEventListener('click', async (e) => {
@@ -1108,8 +1189,16 @@
 
   async function init() {
     $('#brand').textContent = C.name;
+    takeJoinCode();
+    // 입장 화면이나 앱을 연 채로 새 초대 링크를 열어도 코드가 적용되도록 가장 먼저 연결한다
+    window.addEventListener('hashchange', () => { if (takeJoinCode()) location.reload(); });
     try {
       await loadIndex();
+      // 문서가 하나도 안 보이면 코드가 없거나 틀린 것일 수 있다 (서버가 빈 목록을 돌려줌)
+      if (!INDEX.pages.length && !(await checkAccess())) {
+        showGate(getCode() ? '저장된 코드가 맞지 않거나 바뀌었어요. 새 코드를 입력해 주세요.' : '');
+        return;
+      }
     } catch (err) {
       show(`<h1 class="page-title">오류</h1><p>${esc(errText(err))}</p>
         <p class="muted"><code>assets/config.js</code> 의 Supabase 주소와 키, 그리고 <code>supabase/migrations</code> 적용 여부를 확인해 주세요.</p>`);
