@@ -165,6 +165,15 @@
   marked.use({
     gfm: true,
     breaks: true,
+    renderer: {
+      // ![설명](주소 "fold") → 접어 둔 사진. 편집기용(editRender)은 접기 여부만 data-fold 로 표시한다.
+      image(href, title, text) {
+        const fold = title === 'fold';
+        if (editRender) return `<img src="${esc(href)}" alt="${esc(text)}"${fold ? ' data-fold="1"' : ''}>`;
+        if (!fold) return false;
+        return `<details class="img-fold"><summary>🖼 ${esc(text || '사진')}</summary><img src="${esc(href)}" alt="${esc(text)}" loading="lazy"></details>`;
+      },
+    },
     extensions: [
       {
         name: 'infobox',
@@ -1004,7 +1013,28 @@
   });
 
   /* 문서 내 클릭 처리 (목차, 각주 이동) */
+  function openLightbox(img) {
+    const src = img.currentSrc || img.src;
+    const box = document.createElement('div');
+    box.className = 'lightbox';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', '사진 크게 보기');
+    box.innerHTML = `<button type="button" class="lb-close" aria-label="닫기">✕</button>
+      <img src="${esc(src)}" alt="${esc(img.alt)}">
+      <div class="lb-cap">${img.alt ? `<span>${esc(img.alt)}</span>` : ''}<a href="${esc(src)}" target="_blank" rel="noopener noreferrer">원본 열기 ↗</a></div>`;
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    box.addEventListener('click', (e) => { if (!e.target.closest('.lb-cap a')) close(); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(box);
+  }
+
   app.addEventListener('click', (e) => {
+    const img = e.target.closest('img');
+    if (img && img.closest('.content, .infobox') && !img.closest('a, .we-editor')) {
+      openLightbox(img);
+      return;
+    }
     const a = e.target.closest('a');
     if (!a) return;
     if (a.dataset.scroll) {

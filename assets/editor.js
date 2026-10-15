@@ -84,6 +84,17 @@
       replacement: (content, node) => `\n\n:::infobox\n${(node.getAttribute('data-ib') || '').trim()}\n:::\n\n`,
     });
 
+    td.addRule('wikiImage', {
+      filter: 'img',
+      replacement(content, node) {
+        const src = (node.getAttribute('src') || '').trim();
+        if (!src || node.hasAttribute('data-up')) return '';
+        const alt = (node.getAttribute('alt') || '').replace(/[\[\]\n]+/g, ' ').trim();
+        const dest = /[\s()]/.test(src) ? `<${src.replace(/[<>]/g, encodeURIComponent)}>` : src;
+        return `![${alt}](${dest}${node.hasAttribute('data-fold') ? ' "fold"' : ''})`;
+      },
+    });
+
     td.addRule('wikiStrike', {
       filter: ['del', 's', 'strike'],
       replacement: (content) => `~~${content}~~`,
@@ -191,6 +202,7 @@
           sp.replaceWith(...sp.childNodes);
         }
       });
+      editorEl.querySelectorAll('img:not([data-up])').forEach((img) => { img.title = '눌러서 설명·접기 설정'; });
       editorEl.querySelectorAll('aside.infobox').forEach((a) => {
         a.setAttribute('contenteditable', 'false');
         a.classList.add('ib-edit');
@@ -567,6 +579,7 @@
       pop.innerHTML = '';
       pop.className = 'we-pop';
       pop._node = null;
+      pop._pos = null;
     }
     function placePop(target) {
       const wr = wrap.getBoundingClientRect();
@@ -587,6 +600,23 @@
         <button type="button" data-act="unlink">해제</button>`;
       pop._node = a;
       placePop(a);
+    }
+
+    function showImagePop(img, ev) {
+      pop.className = 'we-pop we-pop-image';
+      const folded = img.hasAttribute('data-fold');
+      pop.innerHTML = `
+        <input class="we-pop-alt" maxlength="100" placeholder="사진 설명" value="${esc(img.getAttribute('alt') || '')}" aria-label="사진 설명">
+        <button type="button" data-act="img-fold" class="${folded ? 'on' : ''}" title="접어 두면 한 줄로 보이고 눌러서 펼쳐요">${folded ? '✓ ' : ''}접어서 보기</button>
+        <button type="button" data-act="img-del" class="danger">삭제</button>`;
+      pop._node = img;
+      // 사진이 크면 아래쪽이 화면 밖일 수 있어서, 누른 자리 근처에 띄운다
+      pop.hidden = false;
+      const wr = wrap.getBoundingClientRect();
+      if (ev) pop._pos = { x: ev.clientX - wr.left, y: ev.clientY - wr.top };
+      const at = pop._pos || { x: 24, y: 24 };
+      pop.style.left = `${Math.max(0, Math.min(at.x - 24, wr.width - pop.offsetWidth))}px`;
+      pop.style.top = `${at.y + 14}px`;
     }
 
     function showNotePop(sup, isNew) {
@@ -678,6 +708,12 @@
       const act = b.dataset.act;
       if (act === 'note-ok') finishNote(true);
       else if (act === 'note-del') { pop._node.remove(); hidePop(); changed(); restoreRange(); }
+      else if (act === 'img-fold') {
+        const img = pop._node;
+        if (img.hasAttribute('data-fold')) img.removeAttribute('data-fold'); else img.setAttribute('data-fold', '1');
+        changed();
+        showImagePop(img);
+      } else if (act === 'img-del') { pop._node.remove(); hidePop(); changed(); restoreRange(); }
       else if (act === 'unlink') {
         const a = pop._node;
         a.replaceWith(document.createTextNode(a.textContent));
@@ -686,7 +722,11 @@
       } else if (act === 'edit') openLinkDialog(pop._node);
       else if (act) tableAction(act);
     });
+    on(pop, 'input', (e) => {
+      if (e.target.classList.contains('we-pop-alt') && pop._node) { pop._node.setAttribute('alt', e.target.value); changed(); }
+    });
     on(pop, 'keydown', (e) => {
+      if (e.target.classList.contains('we-pop-alt') && (e.key === 'Enter' || e.key === 'Escape')) { e.preventDefault(); hidePop(); restoreRange(); return; }
       if (e.target.tagName === 'TEXTAREA' && (e.key === 'Enter' && !e.shiftKey)) { e.preventDefault(); finishNote(true); }
       if (e.key === 'Escape') { e.preventDefault(); if (pop.classList.contains('we-pop-note')) finishNote(true); else hidePop(); }
     });
@@ -997,6 +1037,7 @@
         </div>
         <div class="we-field" data-pane="url" hidden><label>이미지 주소</label><input type="url" id="im-src" placeholder="https://"></div>
         <div class="we-field"><label>설명 <small>(선택)</small></label><input type="text" id="im-alt" placeholder="이미지 설명"></div>
+        <div class="we-field"><label class="we-check"><input type="checkbox" id="im-fold"> 접어서 보여주기 <small>(눌러서 펼치기 · 문서가 길어지지 않아요)</small></label></div>
         <div class="we-dialog-actions"><button type="button" data-close>취소</button><button type="button" class="primary" id="im-ok" disabled>확인</button></div>`,
       (dlg, close) => {
         const q = (id) => dlg.querySelector(id);
@@ -1055,9 +1096,10 @@
           }
           if (!url) return;
           const alt = q('#im-alt').value.trim();
+          const fold = q('#im-fold').checked;
           close();
           restoreRange();
-          insertHtml(`<img src="${esc(url)}" alt="${esc(alt)}">`);
+          insertHtml(`<img src="${esc(url)}" alt="${esc(alt)}"${fold ? ' data-fold="1"' : ''}>`);
         };
         ok.addEventListener('click', submit);
         dlg.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'file' && !ok.disabled) { e.preventDefault(); submit(); } });
@@ -1097,6 +1139,8 @@
       if (box) { e.preventDefault(); openInfoboxDialog(box); return; }
       const sup = e.target.closest('sup.fnm');
       if (sup) { showNotePop(sup, false); return; }
+      const pic = e.target.closest('img');
+      if (pic && !pic.hasAttribute('data-up') && !pic.closest('aside.infobox')) { showImagePop(pic, e); return; }
       const a = e.target.closest('a');
       if (a && (a.classList.contains('wl') || a.getAttribute('href'))) { e.preventDefault(); showLinkPop(a); return; }
       if (!closest('td,th')) hidePop();
