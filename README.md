@@ -46,7 +46,7 @@ GitHub Pages(정적 사이트) + Supabase(DB)로 동작하는 나무위키 스�
 공개용 키는 브라우저에 노출됩니다. 그래서 DB 쪽에서 권한을 제한했습니다.
 
 - 테이블은 **읽기 전용**(RLS). 쓰기는 `edit_page()` 함수로만 가능합니다.
-- `edit_page()` 가 제목·길이 검증, 충돌 검사, **IP당 분당 6회 제한**, 차단 목록 확인을 합니다.
+- `edit_page()` 가 제목·길이 검증, 충돌 검사, **IP당 분당 15회 제한**, 차단 목록 확인을 합니다.
 - IP는 서버가 직접 읽고(클라이언트가 속일 수 없음), 원본은 저장하지 않습니다. 가린 값(`1.2.*.*`)과 솔트 해시만 저장하며 해시는 API로 읽을 수 없습니다.
 - 본문은 DOMPurify로 정화해서 렌더링합니다.
 
@@ -69,7 +69,19 @@ GitHub Pages(정적 사이트) + Supabase(DB)로 동작하는 나무위키 스�
 - `sw.js` 의 동작을 바꾸면 `VERSION` 도 올려 주세요.
 - 아이콘은 `assets/icons/` 의 PNG(192, 512, maskable 512, 애플 180)를 같은 이름으로 바꾸면 됩니다. 이름·색은 `manifest.webmanifest`.
 
-## 친구 전용 (초대 링크 + 기기 등록)
+## 친구 전용 (공유 코드 + 선택적 기기 초대)
+
+**기본 사용법(공유 코드)**: 친구들이 같이 쓰는 코드 하나를 정해 단톡방에 올립니다. 친구는 입장 화면에 코드를 넣거나 `https://<사용자>.github.io/<저장소>/#/join/<코드>` 링크를 열면 되고, 한 번 들어온 기기는 계속 들어옵니다 (기기마다 한 번).
+
+```sql
+select private.set_access_code('kq7m-x3vn-p9tb');   -- 코드 정하기 / 바꾸기 (켜기도 함께, 8자 이상 · 12자 이상 무작위 권장)
+select private.clear_access_code();                 -- 공유 코드 끄기 (등록된 기기는 그대로)
+select private.gate_off();                          -- 친구 전용 끄기 (다시 누구나 사용)
+```
+
+코드는 대소문자·공백·하이픈을 무시하고 해시로만 저장됩니다. 코드를 바꾸면 모두 새 코드를 다시 입력해야 합니다. 특정 사람만 막고 싶을 때는 아래 기기 초대를 함께 쓰세요.
+
+### 선택: 1회용 초대 링크 + 기기 등록
 
 웹 사이트는 기기의 **MAC 주소를 읽을 수 없습니다**(브라우저가 알려 주지 않고, 폰은 MAC 을 무작위로 바꿉니다). 대신 같은 효과를 이렇게 냅니다.
 
@@ -137,8 +149,22 @@ delete from public.pages where title = '지울 문서';
 
 ## 배포
 
+### GitHub Pages
+
 1. 이 브랜치를 `main` 에 병합합니다.
 2. 저장소 **Settings → Pages**: Source `Deploy from a branch`, Branch `main` / `/ (root)`.
 3. `https://<사용자>.github.io/<저장소>/` 에서 확인합니다.
+
+### Vercel
+
+빌드가 없는 정적 사이트라 그대로 올라갑니다 (모든 경로가 상대 경로라 주소가 `/` 든 `/저장소/` 든 동작).
+
+1. [vercel.com](https://vercel.com) → **Add New → Project** → 이 GitHub 저장소를 가져옵니다.
+2. **Framework Preset: Other**, Build Command·Output Directory 는 비워 둡니다 (루트 그대로 배포). `vercel.json` / `.vercelignore` 가 헤더와 제외 파일(`supabase/`)을 정해 줍니다.
+3. Deploy → `https://<프로젝트>.vercel.app` 에서 확인합니다. 이후 `main` 에 푸시하면 자동 배포됩니다.
+
+Supabase 쪽은 따로 설정할 것이 없습니다 (로그인을 쓰지 않아 허용 주소 설정이 필요 없고, API 는 어느 주소에서든 호출됩니다).
+주소가 바뀌어도 친구 전용 접속 정보(코드·등록 기기)는 **브라우저 저장소**에 있어서 주소(도메인)마다 따로입니다. 새 주소에서는 다시 한 번 코드를 입력해야 합니다.
+GitHub Pages 와 Vercel 을 동시에 켜 두어도 같은 DB 를 보므로 문서는 똑같이 보입니다. 하나만 쓰려면 다른 쪽을 끄세요.
 
 로컬 확인: `python3 -m http.server 8000` 후 http://localhost:8000
