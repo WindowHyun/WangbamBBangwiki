@@ -551,3 +551,20 @@ sup.fn a { font-size: .8em; padding: 0 1px; }
 .we-field label.we-check input { width: auto; margin: 0; padding: 0; }
 .we-field label.we-check small { color: var(--muted); }
 @media (max-width: 700px) { .we-pop-alt { width: 140px; } }
+
+/* ---------- 친구 전용: 입장 화면 ---------- */
+body.locked .search, body.locked .topnav a, body.locked #side, body.locked #footer { display: none; }
+body.locked .layout { grid-template-columns: minmax(0, 1fr); }
+.gate { max-width: 380px; margin: 8vh auto; padding: 8px 0; text-align: center; }
+.gate-icon { font-size: 2.6rem; line-height: 1; }
+.gate h1 { margin: 10px 0 4px; font-size: 1.5rem; }
+.gate p { margin: 6px 0; color: var(--muted); }
+#gate-form { display: flex; gap: 8px; margin: 18px 0 10px; }
+#gate-form input {
+  flex: 1; min-width: 0; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; font: inherit; font-size: 1rem;
+  text-align: center; letter-spacing: .06em; background: var(--paper); color: var(--text);
+}
+#gate-form input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+#gate-form .btn { padding: 0 22px; border-radius: 10px; }
+.gate-err { color: var(--missing) !important; font-weight: 600; }
+.gate-err[hidden] { display: none; }

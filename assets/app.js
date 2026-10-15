@@ -33,7 +33,12 @@
 
   /* ---------- Supabase (REST) ---------- */
 
+  /* 접속 코드(친구 전용): 이 기기에 저장해 두고 모든 요청 헤더에 실어 보낸다 */
+  const normCode = (c) => String(c || '').trim().toLowerCase().replace(/[\s\-_]+/g, '');
+  const getCode = () => store.get('wiki-device') || store.get('wiki-code'); // 요청에 실어 보낼 열쇠 (기기 토큰 우선)
+
   const ERRORS = {
+    locked: '접속 코드가 맞지 않거나 바뀌었어요. 코드를 다시 입력해 주세요.',
     conflict: '저장하는 사이에 다른 사람이 문서를 수정했습니다.',
     protected: '보호된 문서라 편집할 수 없습니다.',
     blocked: '편집이 차단된 IP입니다.',
@@ -59,7 +64,7 @@
   async function sb(path, { method = 'GET', body } = {}) {
     const res = await fetch(`${C.supabaseUrl}/rest/v1/${path}`, {
       method,
-      headers: { apikey: C.supabaseKey, 'Content-Type': 'application/json' },
+      headers: { apikey: C.supabaseKey, 'Content-Type': 'application/json', ...(getCode() ? { 'x-wiki-code': getCode() } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     if (method === 'GET') {
@@ -92,6 +97,86 @@
     search: (q) => sb('rpc/search_pages', { method: 'POST', body: { q } }),
     edit: (p) => sb('rpc/edit_page', { method: 'POST', body: p }),
   };
+
+  /* 코드가 맞는지 서버에 물어본다. 연결 문제 등은 코드 문제가 아니므로 통과시킨다. */
+  async function checkAccess() {
+    try {
+      return (await sb('rpc/check_access', { method: 'POST', body: {} })) !== false;
+    } catch (err) {
+      return true;
+    }
+  }
+
+  /* 코드가 맞지 않을 때 보여 주는 입장 화면 */
+  function showGate(message) {
+    document.body.classList.add('locked');
+    setTitle('친구 전용');
+    show(`
+      <div class="gate">
+        <div class="gate-icon" aria-hidden="true">🔒</div>
+        <h1>친구 전용 위키</h1>
+        <p>접속 코드를 입력하면 들어올 수 있어요.</p>
+        <form id="gate-form" autocomplete="off">
+          <input id="gate-code" type="text" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="접속 코드" aria-label="접속 코드" value="" maxlength="80">
+          <button class="btn" type="submit">입장</button>
+        </form>
+        <p class="gate-err" id="gate-err" role="alert" ${message ? '' : 'hidden'}>${esc(message || '')}</p>
+        <p class="muted small">친구에게 받은 초대 링크를 열면 이 기기가 등록되어 다음부터는 바로 들어와요.<br>초대 링크는 한 번만 쓸 수 있어서, 폰·PC 기기마다 따로 받아야 해요.</p>
+      </div>`);
+    const form = $('#gate-form');
+    $('#gate-code').focus();
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = normCode($('#gate-code').value);
+      const err = $('#gate-err');
+      if (!code) { $('#gate-code').focus(); return; }
+      form.querySelector('button').disabled = true;
+      const res = await redeemOrCode(code);
+      if (res.ok) {
+        location.hash = '#/';
+        location.reload();
+      } else {
+        form.querySelector('button').disabled = false;
+        err.hidden = false;
+        err.textContent = res.message;
+        $('#gate-code').select();
+      }
+    });
+  }
+
+  /* 초대 토큰이면 이 기기를 등록하고, 아니면 공유 코드로 시도한다. 성공하면 열쇠를 이 기기에 저장한다. */
+  async function redeemOrCode(input) {
+    const token = normCode(input);
+    const looksInvite = /^inv[0-9a-f]{40,}$/.test(token);
+    if (looksInvite) {
+      let dev = null;
+      try { dev = await sb('rpc/redeem_invite', { method: 'POST', body: { p_token: token } }); } catch (err) {
+        return { ok: false, message: errText(err) };
+      }
+      if (typeof dev === 'string' && dev) {
+        store.set('wiki-device', dev);
+        store.set('wiki-code', '');
+        try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {} // 브라우저가 저장 값을 함부로 지우지 않도록 요청
+        return { ok: true };
+      }
+      return { ok: false, message: '이미 사용됐거나 기간이 지난 초대 링크예요. 새 초대 링크를 받아 주세요.' };
+    }
+    const before = { device: store.get('wiki-device'), code: store.get('wiki-code') };
+    store.set('wiki-device', '');
+    store.set('wiki-code', token);
+    if (await checkAccess()) return { ok: true };
+    store.set('wiki-device', before.device);
+    store.set('wiki-code', before.code);
+    return { ok: false, message: '코드가 맞지 않아요. 다시 확인해 주세요.' };
+  }
+
+  /* 초대 링크(#/join/토큰)로 열었으면 토큰을 꺼내고 주소에서는 지운다 */
+  function takeJoinToken() {
+    const m = /^#\/join\/(.+)$/.exec(location.hash);
+    if (!m) return null;
+    history.replaceState(null, '', `${location.pathname}${location.search}#/`);
+    return safeDecode(m[1]);
+  }
 
   async function loadIndex() {
     const rows = await api.list();
@@ -379,6 +464,8 @@
     setTitle(title);
 
     if (!row) {
+      if (!(await checkAccess())) { if (ok()) showGate(getCode() ? '저장된 코드가 맞지 않아요. 새 코드를 입력해 주세요.' : ''); return; }
+      if (!ok()) return;
       show(`
         <div class="doc-head"><h1>${esc(title)}</h1>${tabsHtml(title, '')}</div>
         <p>이 문서는 아직 존재하지 않습니다.</p>
@@ -584,6 +671,7 @@
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${C.supabaseUrl}/storage/v1/object/${IMG_BUCKET}/${path}`);
       xhr.setRequestHeader('apikey', C.supabaseKey);
+      if (getCode()) xhr.setRequestHeader('x-wiki-code', getCode());
       xhr.setRequestHeader('Content-Type', blob.type);
       xhr.setRequestHeader('x-upsert', 'false');
       xhr.setRequestHeader('cache-control', 'max-age=31536000');
@@ -654,6 +742,8 @@
     const row = await api.get(title);
     const revParam = params.get('r');
     const old = row && revParam ? await api.revision(title, revParam) : null;
+    if (!ok()) return;
+    if (!row && !(await checkAccess())) { if (ok()) showGate(getCode() ? '저장된 코드가 맞지 않아요. 새 코드를 입력해 주세요.' : ''); return; }
     if (!ok()) return;
     setTitle(`${title} 편집`);
 
@@ -754,7 +844,9 @@
         location.hash = docHref(title);
       } catch (err) {
         errBox.hidden = false;
-        errBox.innerHTML = esc(errText(err)) + (err.code === 'conflict'
+        errBox.innerHTML = esc(errText(err)) + (err.code === 'locked'
+          ? ' 작성한 내용은 그대로 두고 <a href="#/gate" target="_blank" rel="noopener">새 탭에서 코드를 입력</a>한 뒤 다시 저장해 주세요.'
+          : err.code === 'conflict'
           ? ` 작성한 내용을 복사해 둔 뒤 <a href="${docHref(title)}" target="_blank" rel="noopener">최신 문서</a>를 확인하고 다시 편집해 주세요.`
           : '');
         saveBtn.disabled = false;
@@ -905,6 +997,7 @@
         case 'history': return await viewHistory(name);
         case 'rev': return await viewRev(name, arg2);
         case 'diff': return await viewDiff(name, arg2);
+        case 'gate': return showGate('');
         case 'search': return await viewSearch(params.get('q') || '');
         case 'recent': return await viewRecent();
         case 'all': return viewAll();
@@ -935,7 +1028,20 @@
     $('#brand').textContent = C.name;
     $('#footer').innerHTML = `${esc(C.name)} · 문서 ${INDEX.pages.length}개` +
       (C.repo ? ` · <a href="https://github.com/${esc(C.repo)}" target="_blank" rel="noopener">GitHub</a>` : '') +
-      (installPrompt ? ' · <a href="#" id="install-app">앱으로 설치</a>' : '');
+      (installPrompt ? ' · <a href="#" id="install-app">앱으로 설치</a>' : '') +
+      (getCode() ? ' · <a href="#" id="forget-code" title="이 기기의 등록을 풀고 저장된 문서를 지워요">이 기기 로그아웃</a>' : '');
+    const forget = $('#forget-code');
+    if (forget) {
+      forget.addEventListener('click', async (e) => {
+        e.preventDefault();
+        if (!confirm('이 기기에 저장된 접속 정보와 저장된 문서를 지울까요? 이 기기는 등록이 풀려서, 다시 들어오려면 새 초대 링크가 필요해요.')) return;
+        store.set('wiki-code', '');
+        store.set('wiki-device', '');
+        try { for (const k of await caches.keys()) if (k.startsWith('wiki-data-')) await caches.delete(k); } catch (err) {}
+        location.hash = '#/';
+        location.reload();
+      });
+    }
     const inst = $('#install-app');
     if (inst) {
       inst.addEventListener('click', async (e) => {
@@ -1108,8 +1214,25 @@
 
   async function init() {
     $('#brand').textContent = C.name;
+    // 입장 화면이나 앱을 연 채로 새 초대 링크를 열어도 적용되도록 가장 먼저 연결한다
+    window.addEventListener('hashchange', async () => {
+      const tok = takeJoinToken();
+      if (!tok) return;
+      const res = await redeemOrCode(tok);
+      if (res.ok) location.reload(); else showGate(res.message);
+    });
+    const joinToken = takeJoinToken();
+    if (joinToken) {
+      const res = await redeemOrCode(joinToken);
+      if (!res.ok) { showGate(res.message); return; }
+    }
     try {
       await loadIndex();
+      // 문서가 하나도 안 보이면 코드가 없거나 틀린 것일 수 있다 (서버가 빈 목록을 돌려줌)
+      if (!INDEX.pages.length && !(await checkAccess())) {
+        showGate(getCode() ? '저장된 코드가 맞지 않거나 바뀌었어요. 새 코드를 입력해 주세요.' : '');
+        return;
+      }
     } catch (err) {
       show(`<h1 class="page-title">오류</h1><p>${esc(errText(err))}</p>
         <p class="muted"><code>assets/config.js</code> 의 Supabase 주소와 키, 그리고 <code>supabase/migrations</code> 적용 여부를 확인해 주세요.</p>`);
@@ -1120,6 +1243,13 @@
     window.addEventListener('hashchange', route);
     route();
     updateOffline();
+    // 등록된 기기라면 마지막 접속 시각을 서버에 알린다 (세션당 한 번)
+    try {
+      if (store.get('wiki-device') && !sessionStorage.getItem('wiki-ping')) {
+        sessionStorage.setItem('wiki-ping', '1');
+        sb('rpc/check_access', { method: 'POST', body: {} }).catch(() => {});
+      }
+    } catch (e) {}
   }
 
   registerServiceWorker();
