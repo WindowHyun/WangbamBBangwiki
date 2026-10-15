@@ -35,7 +35,7 @@
 
   /* 접속 코드(친구 전용): 이 기기에 저장해 두고 모든 요청 헤더에 실어 보낸다 */
   const normCode = (c) => String(c || '').trim().toLowerCase().replace(/[\s\-_]+/g, '');
-  const getCode = () => store.get('wiki-code');
+  const getCode = () => store.get('wiki-device') || store.get('wiki-code'); // 요청에 실어 보낼 열쇠 (기기 토큰 우선)
 
   const ERRORS = {
     locked: '접속 코드가 맞지 않거나 바뀌었어요. 코드를 다시 입력해 주세요.',
@@ -121,7 +121,7 @@
           <button class="btn" type="submit">입장</button>
         </form>
         <p class="gate-err" id="gate-err" role="alert" ${message ? '' : 'hidden'}>${esc(message || '')}</p>
-        <p class="muted small">친구에게 받은 초대 링크를 누르면 코드가 자동으로 입력돼요.</p>
+        <p class="muted small">친구에게 받은 초대 링크를 열면 이 기기가 등록되어 다음부터는 바로 들어와요.<br>초대 링크는 한 번만 쓸 수 있어서, 폰·PC 기기마다 따로 받아야 해요.</p>
       </div>`);
     const form = $('#gate-form');
     $('#gate-code').focus();
@@ -130,28 +130,52 @@
       const code = normCode($('#gate-code').value);
       const err = $('#gate-err');
       if (!code) { $('#gate-code').focus(); return; }
-      store.set('wiki-code', code);
       form.querySelector('button').disabled = true;
-      if (await checkAccess()) {
+      const res = await redeemOrCode(code);
+      if (res.ok) {
         location.hash = '#/';
         location.reload();
       } else {
-        store.set('wiki-code', '');
         form.querySelector('button').disabled = false;
         err.hidden = false;
-        err.textContent = '코드가 맞지 않아요. 다시 확인해 주세요.';
+        err.textContent = res.message;
         $('#gate-code').select();
       }
     });
   }
 
-  /* 초대 링크(#/join/코드): 코드를 저장하고 주소에서는 지운다 */
-  function takeJoinCode() {
+  /* 초대 토큰이면 이 기기를 등록하고, 아니면 공유 코드로 시도한다. 성공하면 열쇠를 이 기기에 저장한다. */
+  async function redeemOrCode(input) {
+    const token = normCode(input);
+    const looksInvite = /^inv[0-9a-f]{40,}$/.test(token);
+    if (looksInvite) {
+      let dev = null;
+      try { dev = await sb('rpc/redeem_invite', { method: 'POST', body: { p_token: token } }); } catch (err) {
+        return { ok: false, message: errText(err) };
+      }
+      if (typeof dev === 'string' && dev) {
+        store.set('wiki-device', dev);
+        store.set('wiki-code', '');
+        try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {} // 브라우저가 저장 값을 함부로 지우지 않도록 요청
+        return { ok: true };
+      }
+      return { ok: false, message: '이미 사용됐거나 기간이 지난 초대 링크예요. 새 초대 링크를 받아 주세요.' };
+    }
+    const before = { device: store.get('wiki-device'), code: store.get('wiki-code') };
+    store.set('wiki-device', '');
+    store.set('wiki-code', token);
+    if (await checkAccess()) return { ok: true };
+    store.set('wiki-device', before.device);
+    store.set('wiki-code', before.code);
+    return { ok: false, message: '코드가 맞지 않아요. 다시 확인해 주세요.' };
+  }
+
+  /* 초대 링크(#/join/토큰)로 열었으면 토큰을 꺼내고 주소에서는 지운다 */
+  function takeJoinToken() {
     const m = /^#\/join\/(.+)$/.exec(location.hash);
-    if (!m) return false;
-    store.set('wiki-code', normCode(safeDecode(m[1])));
+    if (!m) return null;
     history.replaceState(null, '', `${location.pathname}${location.search}#/`);
-    return true;
+    return safeDecode(m[1]);
   }
 
   async function loadIndex() {
@@ -1005,13 +1029,14 @@
     $('#footer').innerHTML = `${esc(C.name)} · 문서 ${INDEX.pages.length}개` +
       (C.repo ? ` · <a href="https://github.com/${esc(C.repo)}" target="_blank" rel="noopener">GitHub</a>` : '') +
       (installPrompt ? ' · <a href="#" id="install-app">앱으로 설치</a>' : '') +
-      (getCode() ? ' · <a href="#" id="forget-code" title="이 기기에 저장된 접속 코드와 저장된 문서를 지워요">접속 코드 지우기</a>' : '');
+      (getCode() ? ' · <a href="#" id="forget-code" title="이 기기의 등록을 풀고 저장된 문서를 지워요">이 기기 로그아웃</a>' : '');
     const forget = $('#forget-code');
     if (forget) {
       forget.addEventListener('click', async (e) => {
         e.preventDefault();
-        if (!confirm('이 기기에 저장된 접속 코드와 저장된 문서를 지울까요? 다시 들어오려면 코드가 필요해요.')) return;
+        if (!confirm('이 기기에 저장된 접속 정보와 저장된 문서를 지울까요? 이 기기는 등록이 풀려서, 다시 들어오려면 새 초대 링크가 필요해요.')) return;
         store.set('wiki-code', '');
+        store.set('wiki-device', '');
         try { for (const k of await caches.keys()) if (k.startsWith('wiki-data-')) await caches.delete(k); } catch (err) {}
         location.hash = '#/';
         location.reload();
@@ -1189,9 +1214,18 @@
 
   async function init() {
     $('#brand').textContent = C.name;
-    takeJoinCode();
-    // 입장 화면이나 앱을 연 채로 새 초대 링크를 열어도 코드가 적용되도록 가장 먼저 연결한다
-    window.addEventListener('hashchange', () => { if (takeJoinCode()) location.reload(); });
+    // 입장 화면이나 앱을 연 채로 새 초대 링크를 열어도 적용되도록 가장 먼저 연결한다
+    window.addEventListener('hashchange', async () => {
+      const tok = takeJoinToken();
+      if (!tok) return;
+      const res = await redeemOrCode(tok);
+      if (res.ok) location.reload(); else showGate(res.message);
+    });
+    const joinToken = takeJoinToken();
+    if (joinToken) {
+      const res = await redeemOrCode(joinToken);
+      if (!res.ok) { showGate(res.message); return; }
+    }
     try {
       await loadIndex();
       // 문서가 하나도 안 보이면 코드가 없거나 틀린 것일 수 있다 (서버가 빈 목록을 돌려줌)
@@ -1209,6 +1243,13 @@
     window.addEventListener('hashchange', route);
     route();
     updateOffline();
+    // 등록된 기기라면 마지막 접속 시각을 서버에 알린다 (세션당 한 번)
+    try {
+      if (store.get('wiki-device') && !sessionStorage.getItem('wiki-ping')) {
+        sessionStorage.setItem('wiki-ping', '1');
+        sb('rpc/check_access', { method: 'POST', body: {} }).catch(() => {});
+      }
+    } catch (e) {}
   }
 
   registerServiceWorker();
