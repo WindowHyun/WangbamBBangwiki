@@ -1,0 +1,40 @@
+# Supabase 무료 플랜은 일정 기간 요청이 없으면 프로젝트를 자동으로 일시정지합니다.
+# 하루에 한 번 DB 에 요청을 보내 정지되지 않게 합니다.
+# 주소와 공개용 키는 assets/config.js 에서 읽으므로 따로 설정할 것이 없습니다.
+name: Keep Supabase alive
+
+on:
+  schedule:
+    - cron: '23 3 * * *' # 매일 03:23 UTC (한국 시간 12:23)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ping database
+        run: |
+          set -euo pipefail
+          url=$(sed -n "s/.*supabaseUrl: *'\([^']*\)'.*/\1/p" assets/config.js)
+          key=$(sed -n "s/.*supabaseKey: *'\([^']*\)'.*/\1/p" assets/config.js)
+          if [ -z "$url" ] || [ -z "$key" ]; then
+            echo "assets/config.js 에서 supabaseUrl / supabaseKey 를 찾지 못했습니다." >&2
+            exit 1
+          fi
+          # check_access 는 DB 함수를 실제로 실행합니다. 접속 코드가 켜져 있어도 오류 없이 true/false 를 돌려줍니다.
+          for attempt in 1 2 3; do
+            status=$(curl -sS -o response.txt -w '%{http_code}' --max-time 30 \
+              -X POST "$url/rest/v1/rpc/check_access" \
+              -H "apikey: $key" -H 'Content-Type: application/json' -d '{}' || true)
+            echo "attempt $attempt: HTTP $status $(cat response.txt 2>/dev/null)"
+            if [ "$status" = "200" ]; then exit 0; fi
+            sleep $((attempt * 20))
+          done
+          echo "Supabase 가 응답하지 않습니다. 프로젝트가 일시정지됐는지 대시보드에서 확인하세요." >&2
+          exit 1

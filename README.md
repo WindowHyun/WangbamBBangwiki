@@ -147,6 +147,23 @@ on conflict do nothing;
 delete from public.pages where title = '지울 문서';
 ```
 
+## Supabase 일시정지 방지 (GitHub Actions)
+
+Supabase 무료 플랜은 일정 기간 요청이 없으면 프로젝트를 자동으로 일시정지하고, 그동안 사이트는 "오프라인"으로 보입니다.
+`.github/workflows/keep-supabase-alive.yml` 이 **매일 한 번** DB 함수(`check_access`)를 호출해 정지를 막습니다.
+
+- 주소와 공개용 키는 `assets/config.js` 에서 읽으므로 Secrets 등 따로 설정할 것이 없습니다. Supabase 프로젝트를 옮기면 `config.js` 만 바꾸면 됩니다.
+- 저장소 **Actions** 탭에서 `Keep Supabase alive` → **Run workflow** 로 바로 실행해 볼 수 있습니다. 응답이 없으면 실패(빨간색)로 표시됩니다.
+- GitHub 는 저장소에 60일 동안 활동이 없으면 예약 실행을 멈춥니다. 멈추면 Actions 탭에서 다시 켜 주세요.
+- 이미 일시정지된 프로젝트는 이 방법으로 깨워지지 않습니다. 대시보드에서 **Restore project** 를 눌러야 합니다.
+
+## 새 Supabase 프로젝트로 옮길 때
+
+1. 프로젝트를 만들고 `supabase/migrations/` 를 파일 이름 순서대로 적용합니다 (SQL Editor 또는 `supabase db push`).
+2. (선택) `supabase/seed.sql` 로 예시 문서를 넣습니다.
+3. `assets/config.js` 의 `supabaseUrl`, `supabaseKey` 를 새 프로젝트 값으로 바꾸고, `index.html` 의 `?v=숫자` 를 올립니다.
+4. 접속 코드·초대 링크·등록된 기기는 DB 안에 있어서 옮겨지지 않습니다. 새로 만들어야 합니다.
+
 ## 배포
 
 ### GitHub Pages
